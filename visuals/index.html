@@ -320,10 +320,15 @@
     showLabel(i);
   }
 
+  // iPhone Safari has no Fullscreen API for pages, so this must never throw.
   function enterFullscreen() {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
-    }
+    const el = document.documentElement;
+    const request = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!request || document.fullscreenElement || document.webkitFullscreenElement) return;
+    try {
+      const p = request.call(el);
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {}
   }
 
   let wakeLock;
@@ -401,10 +406,11 @@
     if (!touch || e.pointerType === "mouse") return;
     const t = touch;
     touch = null;
+    if (!t.swiping && Math.hypot(e.clientX - t.x, e.clientY - t.y) <= TAP_SLOP_PX) {
+      go(e.clientX < window.innerWidth / 3 ? current - 1 : current + 1);
+    }
     enterFullscreen();
     keepAwake();
-    if (t.swiping || Math.hypot(e.clientX - t.x, e.clientY - t.y) > TAP_SLOP_PX) return;
-    go(e.clientX < window.innerWidth / 3 ? current - 1 : current + 1);
   });
 
   document.addEventListener("pointercancel", () => (touch = null));
