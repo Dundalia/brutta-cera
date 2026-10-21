@@ -63,6 +63,9 @@
     "6-andarcene",
   ];
   const LABEL_MS = 3000;
+  const SPEED_STEP = 0.1;
+  const SPEED_MIN = 0.1;
+  const SPEED_MAX = 4;
 
   const label = document.getElementById("label");
 
@@ -106,12 +109,26 @@
     });
   }
 
-  function showLabel(i) {
-    const [num, ...rest] = SONGS[i].split("-");
-    label.textContent = num + " · " + rest.join("-");
+  function flash(text) {
+    label.textContent = text;
     label.classList.add("show");
     clearTimeout(labelTimer);
     labelTimer = setTimeout(() => label.classList.remove("show"), LABEL_MS);
+  }
+
+  const speedText = (rate) => rate.toFixed(1) + "×";
+
+  function showLabel(i) {
+    const [num, ...rest] = SONGS[i].split("-");
+    const rate = videos[i].playbackRate;
+    flash(num + " · " + rest.join("-") + (rate !== 1 ? " · " + speedText(rate) : ""));
+  }
+
+  // Speed is kept per song: each video remembers its own rate.
+  function setSpeed(rate) {
+    const v = videos[current];
+    v.playbackRate = Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, rate)) * 10) / 10;
+    flash("velocità " + speedText(v.playbackRate));
   }
 
   function go(i) {
@@ -148,15 +165,22 @@
     keepAwake();
     switch (e.key) {
       case "ArrowRight":
-      case "ArrowDown":
       case "PageDown":
       case " ":
         go(current + 1);
         break;
       case "ArrowLeft":
-      case "ArrowUp":
       case "PageUp":
         go(current - 1);
+        break;
+      case "ArrowUp":
+        setSpeed(videos[current].playbackRate + SPEED_STEP);
+        break;
+      case "ArrowDown":
+        setSpeed(videos[current].playbackRate - SPEED_STEP);
+        break;
+      case "0":
+        setSpeed(1);
         break;
       default:
         if (/^[1-9]$/.test(e.key)) go(Number(e.key) - 1);
