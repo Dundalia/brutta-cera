@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brutta Cera Visuals</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    cursor: none;
+  }
+  video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+    opacity: 0;
+  }
+  video.under {
+    opacity: 1;
+    z-index: 0;
+  }
+  video.active {
+    opacity: 1;
+    z-index: 1;
+  }
+  #label {
+    position: absolute;
+    top: 2.5vh;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    text-align: center;
+    font: 500 clamp(14px, 2vh, 28px)/1.2 -apple-system, "Helvetica Neue", Arial, sans-serif;
+    letter-spacing: 0.04em;
+    color: #fff;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
+    opacity: 0;
+    transition: opacity 0.6s ease;
+    pointer-events: none;
+  }
+  #label.show {
+    opacity: 0.9;
+    transition: opacity 0.15s ease;
+  }
+</style>
+</head>
+<body>
+<div id="label"></div>
+<script>
+  // Ordered setlist: file in ../videos-out/ → shown as "number · title".
+  const SONGS = [
+    "1-brutta cera",
+    "2-bambini",
+    "3-amami",
+    "4-la canzone di elio",
+    "5-un ottimo padre",
+    "6-andarcene",
+  ];
+  const LABEL_MS = 3000;
+  const SPEED_STEP = 0.1;
+  const SPEED_MIN = 0.1;
+  const SPEED_MAX = 4;
+
+  const label = document.getElementById("label");
+
+  const videos = SONGS.map((name) => {
+    const v = document.createElement("video");
+    v.src = "../videos-out/" + encodeURIComponent(name) + ".mp4";
+    v.muted = true;
+    v.loop = true;
+    v.playsInline = true;
+    v.preload = "auto";
+    // Safety net in case a browser ignores `loop` or pauses the video on its own.
+    v.addEventListener("ended", () => {
+      v.currentTime = 0;
+      v.play().catch(() => {});
+    });
+    v.addEventListener("pause", () => {
+      if (v === shown && document.visibilityState === "visible") v.play().catch(() => {});
+    });
+    document.body.appendChild(v);
+    return v;
+  });
+
+  // One speed for the whole set: it carries over when changing song and when a video loops.
+  let speed = 1;
+  function applySpeed(v) {
+    v.defaultPlaybackRate = speed;
+    v.playbackRate = speed;
+  }
+
+  let current = -1;
+  let shown = null;
+  let labelTimer;
+
+  function onPainted(v, fn) {
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => fn());
+    else v.addEventListener("playing", fn, { once: true });
+  }
+
+  // Put `next` on top and start it. The previous video stays visible underneath
+  // until `next` has actually painted a frame, so a cut never flashes black.
+  function present(next) {
+    const prev = shown;
+    shown = next;
+    next.classList.remove("under");
+    next.classList.add("active");
+    next.play().catch(() => {});
+    if (!prev || prev === next) return;
+    prev.classList.remove("active");
+    prev.classList.add("under");
+    onPainted(next, () => {
+      if (prev === shown) return;
+      prev.classList.remove("under");
+      prev.pause();
+      // Rewind now so it is ready at frame 0 the next time it is needed.
+      prev.currentTime = 0;
+    });
+  }
+
+  function flash(text) {
+    label.textContent = text;
+    label.classList.add("show");
+    clearTimeout(labelTimer);
+    labelTimer = setTimeout(() => label.classList.remove("show"), LABEL_MS);
+  }
+
+  const speedText = (rate) => rate.toFixed(1) + "×";
+
+  function showLabel(i) {
+    const [num, ...rest] = SONGS[i].split("-");
+    flash(num + " · " + rest.join("-") + (speed !== 1 ? " · " + speedText(speed) : ""));
+  }
+
+  function setSpeed(rate) {
+    speed = Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, rate)) * 10) / 10;
+    videos.forEach(applySpeed);
+    flash("velocità " + speedText(speed));
+  }
+
+  function go(i) {
+    i = Math.max(0, Math.min(SONGS.length - 1, i));
+    if (i === current) return;
+    current = i;
+    const next = videos[i];
+    if (next.currentTime !== 0) next.currentTime = 0;
+    applySpeed(next);
+    present(next);
+    showLabel(i);
+  }
+
+  function enterFullscreen() {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+  }
+
+  let wakeLock;
+  async function keepAwake() {
+    try {
+      if ("wakeLock" in navigator && !wakeLock) {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => (wakeLock = null));
+      }
+    } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    keepAwake();
+    if (shown && shown.paused) shown.play().catch(() => {});
+  });
+
+  document.addEventListener("keydown", (e) => {
+    enterFullscreen();
+    keepAwake();
+    switch (e.key) {
+      case "ArrowRight":
+      case "PageDown":
+      case " ":
+        go(current + 1);
+        break;
+      case "ArrowLeft":
+      case "PageUp":
+        go(current - 1);
+        break;
+      case "ArrowUp":
+        setSpeed(speed + SPEED_STEP);
+        break;
+      case "ArrowDown":
+        setSpeed(speed - SPEED_STEP);
+        break;
+      case "0":
+        setSpeed(1);
+        break;
+      default:
+        if (/^[1-9]$/.test(e.key)) go(Number(e.key) - 1);
+        else return;
+    }
+    e.preventDefault();
+  });
+
+  document.addEventListener("click", () => {
+    enterFullscreen();
+    keepAwake();
+  });
+
+  go(0);
+</script>
+</body>
+</html>
