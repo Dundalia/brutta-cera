@@ -76,9 +76,24 @@
     v.loop = true;
     v.playsInline = true;
     v.preload = "auto";
+    // Safety net in case a browser ignores `loop` or pauses the video on its own.
+    v.addEventListener("ended", () => {
+      v.currentTime = 0;
+      v.play().catch(() => {});
+    });
+    v.addEventListener("pause", () => {
+      if (v === shown && document.visibilityState === "visible") v.play().catch(() => {});
+    });
     document.body.appendChild(v);
     return v;
   });
+
+  // One speed for the whole set: it carries over when changing song and when a video loops.
+  let speed = 1;
+  function applySpeed(v) {
+    v.defaultPlaybackRate = speed;
+    v.playbackRate = speed;
+  }
 
   let current = -1;
   let shown = null;
@@ -120,15 +135,13 @@
 
   function showLabel(i) {
     const [num, ...rest] = SONGS[i].split("-");
-    const rate = videos[i].playbackRate;
-    flash(num + " · " + rest.join("-") + (rate !== 1 ? " · " + speedText(rate) : ""));
+    flash(num + " · " + rest.join("-") + (speed !== 1 ? " · " + speedText(speed) : ""));
   }
 
-  // Speed is kept per song: each video remembers its own rate.
   function setSpeed(rate) {
-    const v = videos[current];
-    v.playbackRate = Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, rate)) * 10) / 10;
-    flash("velocità " + speedText(v.playbackRate));
+    speed = Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, rate)) * 10) / 10;
+    videos.forEach(applySpeed);
+    flash("velocità " + speedText(speed));
   }
 
   function go(i) {
@@ -137,6 +150,7 @@
     current = i;
     const next = videos[i];
     if (next.currentTime !== 0) next.currentTime = 0;
+    applySpeed(next);
     present(next);
     showLabel(i);
   }
@@ -157,7 +171,9 @@
     } catch (e) {}
   }
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") keepAwake();
+    if (document.visibilityState !== "visible") return;
+    keepAwake();
+    if (shown && shown.paused) shown.play().catch(() => {});
   });
 
   document.addEventListener("keydown", (e) => {
@@ -174,10 +190,10 @@
         go(current - 1);
         break;
       case "ArrowUp":
-        setSpeed(videos[current].playbackRate + SPEED_STEP);
+        setSpeed(speed + SPEED_STEP);
         break;
       case "ArrowDown":
-        setSpeed(videos[current].playbackRate - SPEED_STEP);
+        setSpeed(speed - SPEED_STEP);
         break;
       case "0":
         setSpeed(1);
