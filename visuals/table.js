@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 
-const { SETLIST, COVER, slides, setShown, attachTable } = window.visuals;
+const { SETLIST, COVER, slides, setShown, attachTable, loading, finishLoading } = window.visuals;
 
 // Where each sheet lies on the table: x, z in metres, rotation in degrees.
 // About 20 cm apart, so the props in between show up on every move.
@@ -35,6 +35,9 @@ renderer.setPixelRatio(ratio);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
+// The glass ashtray's refraction is rendered at half resolution: far cheaper, and
+// the difference is invisible on such a small object.
+renderer.transmissionResolutionScale = 0.5;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 // Nothing on the table moves, so the lamp's shadow map is drawn once (and again
@@ -47,6 +50,7 @@ scene.background = new THREE.Color(0x0b0806);
 const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 20);
 
 const manager = new THREE.LoadingManager();
+manager.onProgress = (url, loaded, total) => loading(0.08 + (0.74 * loaded) / total);
 const textures = new THREE.TextureLoader(manager);
 const aniso = renderer.capabilities.getMaxAnisotropy();
 const small = matchMedia("(pointer: coarse)").matches || renderer.capabilities.maxTextureSize < 4096;
@@ -79,7 +83,7 @@ function tableTexture(url, srgb) {
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
-const woodArm = tableTexture("assets/table/wood_arm_2k.jpg"); // AO, roughness, metalness
+const woodArm = tableTexture("assets/table/wood_arm_1k.jpg"); // AO, roughness, metalness
 const tableTop = new THREE.Mesh(
   new THREE.PlaneGeometry(5, 4),
   new THREE.MeshStandardMaterial({
@@ -161,7 +165,10 @@ function sheetMaterial(poster, u) {
         .replace(
           "#include <map_fragment>",
           "vec4 sheetTexel = mix(texture2D(map, vMapUv), texture2D(uVideo, vMapUv), uVideoMix);\n" +
-            "\tvec3 sheetLinear = sheetToLinear(sheetTexel.rgb);\n\tdiffuseColor.rgb *= sheetLinear;"
+            "\tvec3 sheetLinear = sheetToLinear(sheetTexel.rgb);\n" +
+            // landed on this sheet: skip all lighting and show the texture as is
+            "\tif (uFocus > 0.999) { gl_FragColor = linearToOutputTexel(vec4(sheetLinear, 1.0)); return; }\n" +
+            "\tdiffuseColor.rgb *= sheetLinear;"
         )
         .replace(
           "#include <tonemapping_fragment>",
@@ -190,10 +197,10 @@ const sheets = SETLIST.map((name, i) => {
   addShadow(softShadow, w * 1.03, h * 1.03, x, z, rot, 0.6, 0.009, 0.014);
   let videoTexture = null;
   if (!isCover) {
+    // No mipmaps: regenerating them for every video frame costs more than it gives.
     videoTexture = new THREE.VideoTexture(slides[i].el);
-    videoTexture.minFilter = THREE.LinearMipmapLinearFilter;
-    videoTexture.generateMipmaps = true;
-    videoTexture.anisotropy = aniso;
+    videoTexture.minFilter = THREE.LinearFilter;
+    videoTexture.generateMipmaps = false;
   }
   return { i, w, h, x, z, rot, mesh, u, poster, videoTexture, live: false, fade: 0 };
 });
@@ -1281,10 +1288,31 @@ resize();
 
 let ready = false;
 const whenReady = [];
+// Once everything is loaded, compile every shader and upload every texture before
+// the first frame that needs them, so the fly-in never stutters.
 manager.onLoad = () => {
-  ready = true;
   renderer.shadowMap.needsUpdate = true;
-  whenReady.splice(0).forEach((fn) => fn());
+  scene.traverse((o) => {
+    if (!o.material) return;
+    for (const m of [].concat(o.material)) {
+      for (const key of ["map", "normalMap", "roughnessMap", "aoMap", "alphaMap", "emissiveMap"]) if (m[key]) renderer.initTexture(m[key]);
+    }
+  });
+  for (const s of sheets) renderer.initTexture(s.poster);
+  const go = () => {
+    if (ready) return;
+    ready = true;
+    whenReady.splice(0).forEach((fn) => fn());
+  };
+  // ...and wait for the first song's video to be playable too.
+  const firstVideo = () => {
+    loading(0.9);
+    const v = slides[1].el;
+    if (v.readyState >= 3) return go();
+    v.addEventListener("canplay", go, { once: true });
+    setTimeout(go, 10000);
+  };
+  renderer.compileAsync(scene, camera).then(firstVideo, firstVideo);
 };
 setTimeout(() => manager.onLoad(), 15000);
 
@@ -1294,13 +1322,15 @@ if (new URLSearchParams(location.search).has("debug")) window.__table = { cam, s
 attachTable({
   // Start rendering; if nothing has been shown yet, begin with a slow fly-in.
   enter(i) {
-    startLoop();
-    const begin = () => {
-      if (landed === -1 && !flight) {
-        Object.assign(cam, { x: OVERVIEW_X, z: 0.01, d: overviewDistance(), yaw: 0, tilt: 0 });
-        flyTo(i, 3400);
-      }
-    };
+    // When everything is in, the loading screen fills up and fades into the fly-in.
+    const begin = () =>
+      finishLoading(() => {
+        startLoop();
+        if (landed === -1 && !flight) {
+          Object.assign(cam, { x: OVERVIEW_X, z: 0.01, d: overviewDistance(), yaw: 0, tilt: 0 });
+          flyTo(i, 3400);
+        }
+      });
     if (ready) begin();
     else whenReady.push(begin);
   },
