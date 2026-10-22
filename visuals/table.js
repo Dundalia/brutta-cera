@@ -199,6 +199,7 @@ const sheets = SETLIST.map((name, i) => {
 });
 
 // --- props --------------------------------------------------------------------------
+const gltf = new GLTFLoader(manager);
 function shade(obj) {
   obj.traverse((o) => {
     if (!o.isMesh) return;
@@ -506,97 +507,231 @@ function grinderLid() {
 }
 
 // --- a PS3 DualShock 3, lying face up -------------------------------------------------------
-function buttonSymbol(color, draw) {
-  return canvasTexture(128, 128, (g) => {
-    g.fillStyle = "#141417";
-    g.fillRect(0, 0, 128, 128);
-    g.strokeStyle = color;
-    g.lineWidth = 9;
-    g.lineJoin = "round";
-    g.beginPath();
-    draw(g);
-    g.stroke();
+// The shell is a smooth mesh modelled offline (assets/models/ds3) together with a
+// height map of its top, used to sit every button and recess on the curved plastic.
+function decal(size, draw) {
+  return canvasTexture(256, 256, (c) => {
+    c.clearRect(0, 0, 256, 256);
+    draw(c);
+  });
+}
+function symbolDecal(color, path) {
+  return decal(256, (c) => {
+    c.strokeStyle = color;
+    c.lineWidth = 20;
+    c.lineJoin = "round";
+    c.lineCap = "round";
+    c.beginPath();
+    path(c);
+    c.stroke();
   });
 }
 
 function ps3Controller() {
-  const g = new THREE.Group();
-  const plastic = new THREE.MeshPhysicalMaterial({ color: 0x0a0a0c, roughness: 0.25, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.15 });
-  const rubber = new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.85 });
-  const key = new THREE.MeshPhysicalMaterial({ color: 0x17171a, roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.1 });
-  const silver = new THREE.MeshStandardMaterial({ color: 0x8f9096, roughness: 0.3, metalness: 1 });
-  const top = 0.03;
+  const group = new THREE.Group();
+  const shellMat = new THREE.MeshPhysicalMaterial({ color: 0x070708, roughness: 0.2, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.12 });
+  const keyMat = new THREE.MeshPhysicalMaterial({ color: 0x0e0e11, roughness: 0.16, clearcoat: 1, clearcoatRoughness: 0.08 });
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x1a1a1c, roughness: 0.82 });
+  const matte = new THREE.MeshStandardMaterial({ color: 0x030303, roughness: 0.7 });
+  const printMat = (tex) => new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false });
 
-  const outline = [[-62, 38], [0, 40], [62, 38], [74, 28], [79, 8], [77, -20], [70, -42], [58, -55], [46, -53], [37, -38], [26, -22], [12, -16], [0, -15], [-12, -16], [-26, -22], [-37, -38], [-46, -53], [-58, -55], [-70, -42], [-77, -20], [-79, 8], [-74, 28]].map(
-    ([x, y]) => new THREE.Vector2(mm(x), mm(y))
-  );
-  const shape = new THREE.Shape();
-  shape.moveTo(outline[0].x, outline[0].y);
-  shape.splineThru([...outline.slice(1), outline[0]]);
-  const body = new THREE.Mesh(
-    new THREE.ExtrudeGeometry(shape, { depth: mm(16), bevelEnabled: true, bevelThickness: mm(7), bevelSize: mm(6), bevelSegments: 6, curveSegments: 64 }),
-    plastic
-  );
-  body.rotation.x = -Math.PI / 2;
-  body.position.y = mm(7);
-  g.add(body);
+  const files = new THREE.FileLoader(manager);
+  files.setResponseType("arraybuffer");
+  const base = "assets/models/ds3/ds3_shell";
+  Promise.all([
+    new Promise((ok) => gltf.load(base + ".glb", ok)),
+    new Promise((ok) => new THREE.FileLoader(manager).load(base + "_height.json", (t) => ok(JSON.parse(t)))),
+    new Promise((ok) => files.load(base + "_height.bin", ok)),
+  ]).then(([g, info, buffer]) => {
+    let shell;
+    g.scene.traverse((o) => {
+      if (o.isMesh) shell = o;
+    });
+    shell.material = shellMat;
+    group.add(shell);
 
-  // shoulder buttons along the back edge
-  for (const sx of [-1, 1]) {
-    const l1 = new THREE.Mesh(new THREE.BoxGeometry(mm(30), mm(9), mm(9)), key);
-    l1.position.set(sx * mm(52), mm(17), mm(-40));
-    l1.rotation.y = sx * -0.12;
-    g.add(l1);
-  }
+    // Height of the shell's top (mm) at (x, z) in mm, bilinear in the map.
+    const heights = new Float32Array(buffer);
+    const heightAt = (x, z) => {
+      const fx = Math.min(info.nx - 1.001, Math.max(0, (x - info.x0) / info.step));
+      const fz = Math.min(info.nz - 1.001, Math.max(0, (z - info.z0) / info.step));
+      const i = Math.floor(fx);
+      const k = Math.floor(fz);
+      const u = fx - i;
+      const v = fz - k;
+      const h = (a, b) => heights[a * info.nz + b];
+      return (h(i, k) * (1 - u) + h(i + 1, k) * u) * (1 - v) + (h(i, k + 1) * (1 - u) + h(i + 1, k + 1) * u) * v;
+    };
+    const upY = new THREE.Vector3(0, 1, 0);
+    const surface = (x, z) => {
+      const e = 0.8;
+      const normal = new THREE.Vector3(heightAt(x - e, z) - heightAt(x + e, z), 2 * e, heightAt(x, z - e) - heightAt(x, z + e)).normalize();
+      return { point: new THREE.Vector3(mm(x), mm(heightAt(x, z)), mm(z)), normal };
+    };
+    // A dark recess that hugs the curved surface.
+    const recess = (cx, cz, r, material, lift = 0.06) => {
+      const geo = new THREE.RingGeometry(mm(0.01), mm(r), 48, 8);
+      geo.rotateX(-Math.PI / 2);
+      const pos = geo.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = cx + pos.getX(i) * 1000;
+        const z = cz + pos.getZ(i) * 1000;
+        pos.setXYZ(i, mm(x), mm(heightAt(x, z) + lift), mm(z));
+      }
+      geo.computeVertexNormals();
+      const m = new THREE.Mesh(geo, material);
+      group.add(m);
+      return m;
+    };
+    const put = (obj, x, z, lift = 0, spin = 0) => {
+      const { point, normal } = surface(x, z);
+      const holder = new THREE.Group();
+      holder.position.copy(point).addScaledVector(normal, mm(lift));
+      holder.quaternion.setFromUnitVectors(upY, normal);
+      obj.rotation.y = spin;
+      holder.add(obj);
+      group.add(holder);
+      return obj;
+    };
+    const disc = (r, material) => {
+      const m = new THREE.Mesh(new THREE.CircleGeometry(mm(r), 48), material);
+      m.rotation.x = -Math.PI / 2;
+      return m;
+    };
 
-  // D-pad: four arrow keys in a shallow round dip
-  const dip = new THREE.Mesh(new THREE.CylinderGeometry(mm(17), mm(17), mm(1), 48), new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 0.6 }));
-  dip.position.set(mm(-48), top - mm(0.3), mm(-8));
-  g.add(dip);
-  for (let k = 0; k < 4; k++) {
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(mm(8), mm(3), mm(10)), key);
-    const a = (k * Math.PI) / 2;
-    arm.position.set(mm(-48) + Math.sin(a) * mm(10), top + mm(1), mm(-8) - Math.cos(a) * mm(10));
-    arm.rotation.y = -a;
-    g.add(arm);
-  }
+    // D-pad: four separate arrow keys pointing at the centre
+    const arrow = new THREE.Shape();
+    arrow.moveTo(mm(-4), mm(3));
+    arrow.lineTo(mm(-4), mm(11));
+    arrow.lineTo(mm(4), mm(11));
+    arrow.lineTo(mm(4), mm(3));
+    arrow.lineTo(0, mm(-0.8));
+    arrow.closePath();
+    const arrowGeo = new THREE.ExtrudeGeometry(arrow, { depth: mm(1.8), bevelEnabled: true, bevelThickness: mm(0.7), bevelSize: mm(0.7), bevelSegments: 3 });
+    arrowGeo.rotateX(-Math.PI / 2);
+    const pad = [-46, -5];
+    for (let k = 0; k < 4; k++) {
+      const a = (k * Math.PI) / 2;
+      const dx = Math.sin(a);
+      const dz = -Math.cos(a);
+      put(new THREE.Mesh(arrowGeo, keyMat), pad[0] + dx * 1.5, pad[1] + dz * 1.5, 0.2, -a);
+    }
+    recess(pad[0], pad[1], 16.5, matte);
 
-  // face buttons with their coloured symbols
-  const symbols = [
-    [0, -11, buttonSymbol("#43c7a2", (c) => { c.moveTo(64, 30); c.lineTo(96, 88); c.lineTo(32, 88); c.closePath(); })],
-    [11, 0, buttonSymbol("#ef5148", (c) => c.arc(64, 64, 30, 0, Math.PI * 2))],
-    [0, 11, buttonSymbol("#7899e6", (c) => { c.moveTo(36, 36); c.lineTo(92, 92); c.moveTo(92, 36); c.lineTo(36, 92); })],
-    [-11, 0, buttonSymbol("#e38fd0", (c) => c.rect(36, 36, 56, 56))],
-  ];
-  for (const [dx, dz, tex] of symbols) {
-    const face = new THREE.MeshPhysicalMaterial({ map: tex, roughness: 0.15, clearcoat: 1, clearcoatRoughness: 0.08 });
-    const b = new THREE.Mesh(new THREE.CylinderGeometry(mm(5.2), mm(5.2), mm(3), 40), [key, face, key]);
-    b.position.set(mm(48 + dx), top + mm(1), mm(-8 + dz));
-    b.rotation.y = -Math.PI / 2;
-    g.add(b);
-  }
+    // face buttons: domed caps with their coloured symbols
+    const face = [46, -5];
+    const capGeo = new THREE.LatheGeometry([[0, 0], [5.1, 0], [5.25, 2.1], [4.8, 3.3], [3.1, 3.9], [0, 4.1]].map(([r, y]) => new THREE.Vector2(mm(r), mm(y))), 40);
+    const symbols = [
+      [0, -12, "#3ec9a7", (c) => { c.moveTo(128, 58); c.lineTo(196, 178); c.lineTo(60, 178); c.closePath(); }],
+      [12, 0, "#ff5f57", (c) => c.arc(128, 128, 62, 0, Math.PI * 2)],
+      [0, 12, "#7ba2f0", (c) => { c.moveTo(70, 70); c.lineTo(186, 186); c.moveTo(186, 70); c.lineTo(70, 186); }],
+      [-12, 0, "#f08fd8", (c) => c.rect(70, 70, 116, 116)],
+    ];
+    for (const [dx, dz, color, path] of symbols) {
+      const cap = put(new THREE.Mesh(capGeo, keyMat), face[0] + dx, face[1] + dz, -0.4);
+      const mark = disc(3.4, printMat(symbolDecal(color, path)));
+      mark.position.y = mm(4.15);
+      cap.add(mark);
+      recess(face[0] + dx, face[1] + dz, 6.3, matte);
+    }
 
-  // analog sticks: rubber caps with a concave top
-  for (const sx of [-1, 1]) {
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(mm(13), mm(13), mm(1), 48), new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 0.6 }));
-    base.position.set(sx * mm(25), top - mm(0.3), mm(22));
-    const stem = new THREE.Mesh(new THREE.CylinderGeometry(mm(4.5), mm(5.5), mm(7), 24), rubber);
-    stem.position.set(sx * mm(25), top + mm(3.5), mm(22));
-    const cap = lathe([[0, mm(4)], [mm(8.6), mm(2.8)], [mm(9.2), mm(4.4)], [mm(9.2), mm(6.6)], [mm(8.4), mm(7.4)], [mm(7), mm(7.3)], [0, mm(6.2)]], rubber, 48);
-    cap.position.set(sx * mm(25), top + mm(3.5), mm(22));
-    g.add(base, stem, cap);
-  }
+    // analog sticks: rubber caps, concave on top with a ridged rim
+    const stickGeo = new THREE.LatheGeometry(
+      [[0, 4.6], [6.4, 4.4], [9.4, 5.4], [10.5, 6.6], [10.7, 7.8], [10.1, 8.8], [8.9, 9.2], [7.3, 9.0], [3.6, 8.0], [0, 7.8]].map(([r, y]) => new THREE.Vector2(mm(r), mm(y))),
+      96
+    );
+    const sp = stickGeo.attributes.position;
+    for (let i = 0; i < sp.count; i++) {
+      const x = sp.getX(i);
+      const z = sp.getZ(i);
+      const r = Math.hypot(x, z);
+      if (r < mm(9.6) || sp.getY(i) < mm(5.8)) continue;
+      const f = 1 + 0.025 * Math.max(0, Math.cos(Math.atan2(z, x) * 40));
+      sp.setX(i, x * f);
+      sp.setZ(i, z * f);
+    }
+    stickGeo.computeVertexNormals();
+    for (const sx of [-1, 1]) {
+      const x = sx * 23;
+      const z = 17;
+      recess(x, z, 12.8, matte);
+      put(new THREE.Mesh(new THREE.CylinderGeometry(mm(4), mm(4.6), mm(6), 24), rubber), x, z, 2.5);
+      put(new THREE.Mesh(stickGeo, rubber), x, z, 0);
+    }
 
-  // PS button, select and start
-  const ps = new THREE.Mesh(new THREE.CylinderGeometry(mm(5.5), mm(5.5), mm(1.6), 40), silver);
-  ps.position.set(0, top + mm(0.5), mm(4));
-  g.add(ps);
-  for (const sx of [-1, 1]) {
-    const k = new THREE.Mesh(new THREE.BoxGeometry(mm(8), mm(1.5), mm(4)), key);
-    k.position.set(sx * mm(13), top + mm(0.4), mm(-10));
-    g.add(k);
-  }
-  return shade(g);
+    // PS button with its logo; SELECT and START with their printed labels
+    const psTop = decal(256, (c) => {
+      const grad = c.createRadialGradient(128, 110, 10, 128, 128, 128);
+      grad.addColorStop(0, "#5d5e63");
+      grad.addColorStop(1, "#2a2b2f");
+      c.fillStyle = grad;
+      c.beginPath();
+      c.arc(128, 128, 126, 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = "#0b0b0c";
+      c.font = "italic 900 118px Arial Black, Arial, sans-serif";
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillText("PS", 128, 134);
+    });
+    const ps = new THREE.Mesh(new THREE.CylinderGeometry(mm(5.6), mm(5.8), mm(1.4), 48), [keyMat, new THREE.MeshPhysicalMaterial({ map: psTop, roughness: 0.3, metalness: 0.5, clearcoat: 1 }), keyMat]);
+    ps.position.y = mm(0.5);
+    put(ps, 0, 9, 0);
+    recess(0, 9, 7, matte);
+    const label = (text) =>
+      decal(256, (c) => {
+        c.fillStyle = "rgba(235,235,235,0.92)";
+        c.font = "600 38px Helvetica, Arial, sans-serif";
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.fillText(text, 128, 128);
+      });
+    const select = new THREE.Shape();
+    select.moveTo(mm(-3.6), mm(-1.9));
+    select.lineTo(mm(3.6), mm(-1.9));
+    select.lineTo(mm(3.6), mm(1.9));
+    select.lineTo(mm(-3.6), mm(1.9));
+    select.closePath();
+    const start = new THREE.Shape();
+    start.moveTo(mm(-3.4), mm(-2.6));
+    start.lineTo(mm(3.8), 0);
+    start.lineTo(mm(-3.4), mm(2.6));
+    start.closePath();
+    for (const [x, shape, text] of [[-13, select, "SELECT"], [13, start, "START"]]) {
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: mm(1), bevelEnabled: true, bevelThickness: mm(0.5), bevelSize: mm(0.6), bevelSegments: 2 });
+      geo.rotateX(-Math.PI / 2);
+      put(new THREE.Mesh(geo, keyMat), x, -9, 0.1);
+      const print = new THREE.Mesh(new THREE.PlaneGeometry(mm(14), mm(14)), printMat(label(text)));
+      print.rotation.x = -Math.PI / 2;
+      put(print, x, -14.5, 0.08);
+    }
+
+    // player LEDs on the back edge, the first one lit
+    for (let k = 0; k < 4; k++) {
+      const led = new THREE.Mesh(
+        new THREE.BoxGeometry(mm(2.2), mm(0.4), mm(1.2)),
+        k === 0 ? new THREE.MeshBasicMaterial({ color: 0xff3a2a, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: 0x2a0d0b, roughness: 0.4 })
+      );
+      put(led, -6 + k * 4, -31.5, 0.1);
+    }
+
+    // L1 / R1 on the back corners
+    const bumper = new THREE.Shape();
+    bumper.absarc(mm(-11), 0, mm(5), Math.PI / 2, (Math.PI * 3) / 2, false);
+    bumper.absarc(mm(11), 0, mm(5), -Math.PI / 2, Math.PI / 2, false);
+    const bumperGeo = new THREE.ExtrudeGeometry(bumper, { depth: mm(6), bevelEnabled: true, bevelThickness: mm(2), bevelSize: mm(2), bevelSegments: 4 });
+    for (const sx of [-1, 1]) {
+      const l1 = new THREE.Mesh(bumperGeo, keyMat);
+      l1.rotation.set(-Math.PI / 2, 0, sx * 0.1);
+      l1.position.set(mm(sx * 46), mm(12.5), mm(-30.5));
+      group.add(l1);
+    }
+
+    shade(group);
+    renderer.shadowMap.needsUpdate = true;
+  });
+  group.scale.setScalar(1.02);
+  return group;
 }
 
 // --- an electric guitar in the Stratocaster style, lying on its back --------------------------
@@ -889,7 +1024,6 @@ loose.position.y = 0.0039;
 place(loose, -0.575, -0.36, 100);
 
 // Photographed props from Poly Haven (CC0), loaded at their real size.
-const gltf = new GLTFLoader(manager);
 function loadModel(url, setup) {
   gltf.load(url, (g) => {
     const root = shade(g.scene);
@@ -1153,6 +1287,9 @@ manager.onLoad = () => {
   whenReady.splice(0).forEach((fn) => fn());
 };
 setTimeout(() => manager.onLoad(), 15000);
+
+// ?debug exposes the camera so a prop can be inspected up close from the console.
+if (new URLSearchParams(location.search).has("debug")) window.__table = { cam, scene, renderer };
 
 attachTable({
   // Start rendering; if nothing has been shown yet, begin with a slow fly-in.
