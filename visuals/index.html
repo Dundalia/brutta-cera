@@ -55,12 +55,59 @@
     height: auto;
     overflow: visible;
   }
+  /* table mode: the WebGL scene replaces the plain player */
+  #scene, #vignette {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: none;
+  }
+  #vignette {
+    z-index: 1;
+    pointer-events: none;
+    background: radial-gradient(ellipse 80% 75% at 50% 46%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0.6) 100%);
+  }
+  body.table #scene, body.table #vignette {
+    display: block;
+  }
+  /* videos still play, but only as textures on the sheets */
+  body.table video.slide {
+    opacity: 0 !important;
+    z-index: -1 !important;
+  }
+  /* the animated cover sits exactly on the printed card (placed from script) */
+  body.table #cover {
+    position: fixed;
+    inset: auto;
+    left: 0;
+    top: 0;
+    width: 1000px;
+    height: 1000px;
+    transform-origin: 0 0;
+    display: none;
+    opacity: 0;
+    transition: opacity 0.35s ease;
+    z-index: 2;
+  }
+  body.table #cover.active {
+    display: block;
+  }
+  body.table #cover.show {
+    opacity: 1;
+  }
+  body.table #cover svg {
+    position: absolute;
+    left: 3.75%;
+    top: 25%;
+    width: 91.25%;
+  }
   #label {
     position: absolute;
     top: 2.5vh;
     left: 0;
     right: 0;
-    z-index: 2;
+    z-index: 3;
     text-align: center;
     font: 500 clamp(14px, 2vh, 28px)/1.2 -apple-system, "Helvetica Neue", Arial, sans-serif;
     letter-spacing: 0.04em;
@@ -131,6 +178,8 @@
 <!--COVER:STYLE:END-->
 </head>
 <body>
+<canvas id="scene"></canvas>
+<div id="vignette"></div>
 <!--COVER:SVG:BEGIN-->
 <div id="cover" class="slide">
 <svg viewBox="0 0 1460 720" role="img" aria-label="Brutta Cera EP, 23.10.26">
@@ -171,6 +220,7 @@
 </div>
 <!--COVER:SVG:END-->
 <div id="label"></div>
+<script src="vendor/three.min.js"></script>
 <script>
   // Ordered setlist: index = key to press. "0-copertina" is the animated cover above,
   // the others are files in ../videos-out/. Shown as "number · title".
@@ -270,8 +320,8 @@
 
   const slides = SETLIST.map((name) => (name === COVER ? coverSlide() : videoSlide(name)));
 
-  // Put `next` on top and start it. The previous slide stays visible underneath
-  // until `next` has actually painted a frame, so a cut never flashes black.
+  // Flat mode: put `next` on top and start it. The previous slide stays visible
+  // underneath until `next` has actually painted a frame, so a cut never flashes black.
   function present(next) {
     const prev = shown;
     shown = next;
@@ -310,14 +360,459 @@
     flash("velocità " + speedText(speed));
   }
 
+  // ---------------------------------------------------------------------------
+  // Table mode: every sheet lies on a wooden table under a lamp. Changing song
+  // lifts the camera off the current sheet, flies over the table and lands on
+  // the next one; once it has landed the video starts from the beginning.
+  // ---------------------------------------------------------------------------
+
+  // Where each sheet lies on the table: x, z in metres, rotation in degrees.
+  const LAYOUT = [
+    [-0.6, -0.17, -6],
+    [-0.2, -0.19, 5],
+    [0.2, -0.155, -4],
+    [0.6, -0.18, 8],
+    [0.42, 0.185, -7],
+    [0.01, 0.17, 4],
+    [-0.4, 0.19, -9],
+  ];
+  const SHEET_W = 0.3;
+  const SHEET_H = 0.225;
+  const COVER_SIZE = 0.25;
+  const VFOV = (30 * Math.PI) / 180;
+  const FIT_MARGIN = 0.96;
+  const MAX_TILT = (12 * Math.PI) / 180;
+
+  function createTable() {
+    const THREE = window.THREE;
+    // From file:// the browser refuses local images and videos as WebGL textures.
+    if (!THREE || location.protocol === "file:") return null;
+    const canvas = document.getElementById("scene");
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+    } catch (e) {
+      return null;
+    }
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // Textures and output both stay in sRGB, so a focused sheet shows the video's exact colours.
+    renderer.outputEncoding = THREE.LinearEncoding;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0806);
+    const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 20);
+
+    const manager = new THREE.LoadingManager();
+    const loader = new THREE.TextureLoader(manager);
+    const aniso = renderer.capabilities.getMaxAnisotropy();
+    const small = matchMedia("(pointer: coarse)").matches || renderer.capabilities.maxTextureSize < 4096;
+
+    // --- the table -------------------------------------------------------------
+    const wood = loader.load("assets/wood-" + (small ? "2k" : "4k") + ".jpg");
+    const woodNormal = loader.load("assets/wood-normal.jpg");
+    for (const t of [wood, woodNormal]) {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(5, 4);
+      t.anisotropy = aniso;
+    }
+    const tableTop = new THREE.Mesh(
+      new THREE.PlaneGeometry(5, 4),
+      new THREE.MeshStandardMaterial({
+        map: wood,
+        normalMap: woodNormal,
+        normalScale: new THREE.Vector2(0.5, 0.5),
+        roughness: 0.5,
+        metalness: 0,
+      })
+    );
+    tableTop.rotation.x = -Math.PI / 2;
+    scene.add(tableTop);
+
+    // --- light: a warm desk lamp up and to the left, plus soft room light ------
+    scene.add(new THREE.AmbientLight(0xfff3e6, 0.36));
+    const lamp = new THREE.SpotLight(0xffe4bf, 0.9, 0, 0.85, 0.95, 0);
+    lamp.position.set(-0.35, 1.3, -0.55);
+    lamp.target.position.set(0.05, 0, 0.05);
+    scene.add(lamp, lamp.target);
+
+    // --- soft shadows under the sheets (pre-blurred decals) ----------------------
+    function shadowTexture(blur) {
+      const c = document.createElement("canvas");
+      c.width = c.height = 256;
+      const g = c.getContext("2d");
+      g.shadowColor = "#000";
+      g.shadowBlur = blur;
+      g.shadowOffsetX = 1000;
+      g.fillRect(256 * 0.15 - 1000, 256 * 0.15, 256 * 0.7, 256 * 0.7);
+      return new THREE.CanvasTexture(c);
+    }
+    const contactShadow = shadowTexture(6);
+    const softShadow = shadowTexture(28);
+    function addShadow(tex, w, h, x, z, rot, opacity, dx, dz) {
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(w / 0.7, h / 0.7),
+        new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity, depthWrite: false })
+      );
+      m.rotation.set(-Math.PI / 2, 0, rot);
+      m.position.set(x + dx, 0.0003, z + dz);
+      scene.add(m);
+    }
+
+    // --- sheets ---------------------------------------------------------------
+    function random(seed) {
+      return () => {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+      };
+    }
+    // A sheet that is not perfectly flat: corners lift a few millimetres.
+    function paperGeometry(w, h, seed) {
+      const g = new THREE.PlaneGeometry(w, h, 24, 18);
+      g.rotateX(-Math.PI / 2);
+      const r = random(seed * 7919 + 13);
+      const lift = [r(), r(), r(), r()].map((v) => 0.0012 + v * 0.0045);
+      const bow = r() * 0.0015;
+      const p = g.attributes.position;
+      for (let k = 0; k < p.count; k++) {
+        const u = p.getX(k) / w + 0.5;
+        const v = p.getZ(k) / h + 0.5;
+        const nx = 2 * u - 1;
+        const nz = 2 * v - 1;
+        const corner = lift[0] * (1 - u) * (1 - v) + lift[1] * u * (1 - v) + lift[2] * (1 - u) * v + lift[3] * u * v;
+        p.setY(k, corner * nx * nx * nz * nz + bow * nx * nx);
+      }
+      g.computeVertexNormals();
+      return g;
+    }
+    // Lit paper that can cross-fade from its poster to the live video (uVideoMix)
+    // and from lit to the texture's exact colours when the camera is on it (uFocus).
+    function sheetMaterial(poster, u) {
+      const m = new THREE.MeshLambertMaterial({ map: poster });
+      m.onBeforeCompile = (shader) => {
+        Object.assign(shader.uniforms, u);
+        shader.fragmentShader =
+          "uniform sampler2D uVideo;\nuniform float uVideoMix;\nuniform float uFocus;\n" +
+          shader.fragmentShader
+            .replace(
+              "#include <map_fragment>",
+              "vec4 sheetTexel = mix(texture2D(map, vUv), texture2D(uVideo, vUv), uVideoMix);\n\tdiffuseColor *= sheetTexel;"
+            )
+            .replace(
+              "#include <output_fragment>",
+              "outgoingLight = mix(outgoingLight, sheetTexel.rgb, uFocus);\n\t#include <output_fragment>"
+            );
+      };
+      return m;
+    }
+
+    const sheets = SETLIST.map((name, i) => {
+      const isCover = name === COVER;
+      const w = isCover ? COVER_SIZE : SHEET_W;
+      const h = isCover ? COVER_SIZE : SHEET_H;
+      const [x, z, deg] = LAYOUT[i];
+      const rot = (deg * Math.PI) / 180;
+      const poster = loader.load(isCover ? "../public/cover.png" : "assets/posters/" + encodeURIComponent(name) + ".jpg");
+      poster.anisotropy = aniso;
+      const u = { uVideo: { value: poster }, uVideoMix: { value: 0 }, uFocus: { value: 0 } };
+      const mesh = new THREE.Mesh(paperGeometry(w, h, i + 1), sheetMaterial(poster, u));
+      mesh.position.set(x, 0.0008 + i * 0.0002, z);
+      mesh.rotation.y = rot;
+      scene.add(mesh);
+      addShadow(contactShadow, w, h, x, z, rot, 0.55, 0.001, 0.0015);
+      addShadow(softShadow, w * 1.03, h * 1.03, x, z, rot, 0.6, 0.009, 0.014);
+      let videoTexture = null;
+      if (!isCover) {
+        videoTexture = new THREE.VideoTexture(slides[i].el);
+        videoTexture.minFilter = THREE.LinearFilter;
+        videoTexture.magFilter = THREE.LinearFilter;
+        videoTexture.generateMipmaps = false;
+      }
+      return { i, w, h, x, z, rot, mesh, u, poster, videoTexture, live: false, fade: 0 };
+    });
+
+    // --- camera ---------------------------------------------------------------
+    const cam = { x: 0, z: 0, d: 2, yaw: 0, tilt: 0 };
+    const aspect = () => window.innerWidth / window.innerHeight;
+    const tanV = Math.tan(VFOV / 2);
+    const fitDistance = (w, h) => Math.max(h / FIT_MARGIN / 2 / tanV, w / FIT_MARGIN / 2 / (tanV * aspect()));
+    const spanDistance = (span) => Math.max(span / 2 / (tanV * aspect()), (span * 0.6) / 2 / tanV);
+    const OVERVIEW = { x: 0, z: 0.01, d: 0, yaw: 0, tilt: 0 };
+    const overviewDistance = () => Math.min(3.2, spanDistance(1.75));
+    const focusState = (s) => ({ x: s.x, z: s.z, d: fitDistance(s.w, s.h), yaw: s.rot, tilt: 0 });
+
+    const up = new THREE.Vector3();
+    const target = new THREE.Vector3();
+    function applyCamera() {
+      up.set(-Math.sin(cam.yaw), 0, -Math.cos(cam.yaw));
+      const back = cam.d * Math.sin(cam.tilt);
+      camera.position.set(cam.x - up.x * back, cam.d * Math.cos(cam.tilt), cam.z - up.z * back);
+      camera.up.copy(up);
+      target.set(cam.x, 0, cam.z);
+      camera.lookAt(target);
+    }
+
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+    const smooth = (a, b, x) => {
+      const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    };
+
+    let flight = null;
+    let landed = -1;
+    let running = false;
+    const tweens = [];
+
+    function tween(obj, key, to, ms, done) {
+      for (let k = tweens.length - 1; k >= 0; k--) if (tweens[k].obj === obj && tweens[k].key === key) tweens.splice(k, 1);
+      tweens.push({ obj, key, from: obj[key], to, t0: performance.now(), ms, done });
+    }
+
+    function flyTo(i, ms) {
+      const s = sheets[i];
+      const from = { ...cam };
+      const to = focusState(s);
+      const dist = Math.hypot(to.x - from.x, to.z - from.z);
+      const peak = Math.min(3.2, Math.max(spanDistance(0.75 + dist * 1.1), from.d, to.d));
+      flight = {
+        i,
+        from,
+        to,
+        peak,
+        tilt: MAX_TILT * Math.min(1, dist / 0.3),
+        t0: performance.now(),
+        ms: ms || Math.min(2600, 1500 + dist * 900),
+      };
+      depart();
+    }
+
+    // Leaving a sheet: the cover overlay cannot follow the camera, so it fades out;
+    // a video keeps playing until the camera has landed somewhere else.
+    function depart() {
+      if (landed === -1) return;
+      const s = sheets[landed];
+      landed = -1;
+      if (!s.videoTexture) hideCover();
+    }
+
+    function land(i) {
+      landed = i;
+      const s = sheets[i];
+      const slide = slides[i];
+      shown = slide;
+      if (s.videoTexture) {
+        s.fade++;
+        if (!s.live) {
+          s.live = true;
+          s.u.uVideo.value = s.videoTexture;
+          slide.start();
+          slide.onPainted(() => {
+            if (landed === i) tween(s.u.uVideoMix, "value", 1, 600);
+          });
+        } else {
+          tween(s.u.uVideoMix, "value", 1, 300);
+        }
+      } else {
+        showCover();
+        slide.start();
+      }
+      // Sheets left behind go back to their finished drawing.
+      for (const o of sheets) {
+        if (o === s || !o.live) continue;
+        const token = ++o.fade;
+        tween(o.u.uVideoMix, "value", 0, 900, () => {
+          if (o.fade !== token) return;
+          o.live = false;
+          o.u.uVideo.value = o.poster;
+          slides[o.i].stop();
+        });
+      }
+    }
+
+    const coverEl = document.getElementById("cover");
+    let coverTimer;
+    function showCover() {
+      clearTimeout(coverTimer);
+      coverEl.classList.add("active");
+      placeCover();
+      requestAnimationFrame(() => coverEl.classList.add("show"));
+    }
+    function hideCover() {
+      coverEl.classList.remove("show");
+      clearTimeout(coverTimer);
+      coverTimer = setTimeout(() => coverEl.classList.remove("active"), 400);
+    }
+
+    // Keep the animated cover glued to the printed card: map its 1000px box onto
+    // the card's projected corners.
+    const corner = new THREE.Vector3();
+    function project(s, lx, lz) {
+      corner.set(lx, 0, lz).applyAxisAngle(THREE.Object3D.DEFAULT_UP, s.rot);
+      corner.set(corner.x + s.x, 0.001, corner.z + s.z).project(camera);
+      return [((corner.x + 1) / 2) * window.innerWidth, ((1 - corner.y) / 2) * window.innerHeight];
+    }
+    function placeCover() {
+      if (!coverEl.classList.contains("active")) return;
+      const s = sheets[0];
+      const tl = project(s, -s.w / 2, -s.h / 2);
+      const tr = project(s, s.w / 2, -s.h / 2);
+      const bl = project(s, -s.w / 2, s.h / 2);
+      const k = 1 / 1000;
+      coverEl.style.transform = `matrix(${(tr[0] - tl[0]) * k}, ${(tr[1] - tl[1]) * k}, ${(bl[0] - tl[0]) * k}, ${(bl[1] - tl[1]) * k}, ${tl[0]}, ${tl[1]})`;
+    }
+
+    const vignette = document.getElementById("vignette");
+
+    // One render loop at a time, even when table mode is left and re-entered.
+    let loopId = 0;
+    function startLoop() {
+      running = true;
+      const id = ++loopId;
+      const tick = (now) => {
+        if (id !== loopId || !running) return;
+        frame(now);
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+
+    function frame(now) {
+      if (flight) {
+        const t = Math.min(1, (now - flight.t0) / flight.ms);
+        const e = ease(t);
+        const bump = Math.sin(Math.PI * t) ** 2;
+        const f = flight.from;
+        const to = flight.to;
+        cam.x = lerp(f.x, to.x, e);
+        cam.z = lerp(f.z, to.z, e);
+        cam.yaw = lerp(f.yaw, to.yaw, e);
+        cam.d = lerp(f.d, to.d, e) + (flight.peak - lerp(f.d, to.d, 0.5)) * bump;
+        cam.tilt = lerp(f.tilt, 0, e) + flight.tilt * bump;
+        if (t >= 1) {
+          const i = flight.i;
+          flight = null;
+          land(i);
+        }
+      }
+      applyCamera();
+
+      for (let k = tweens.length - 1; k >= 0; k--) {
+        const tw = tweens[k];
+        const t = Math.min(1, (now - tw.t0) / tw.ms);
+        tw.obj[tw.key] = lerp(tw.from, tw.to, t * t * (3 - 2 * t));
+        if (t >= 1) {
+          tweens.splice(k, 1);
+          if (tw.done) tw.done();
+        }
+      }
+
+      // A sheet shows its exact colours only when the camera sits right on it.
+      let focus = 0;
+      for (const s of sheets) {
+        const fit = fitDistance(s.w, s.h);
+        const near = 1 - smooth(fit * 1.01, fit * 1.35, cam.d);
+        const centred = 1 - smooth(0.004, 0.05, Math.hypot(cam.x - s.x, cam.z - s.z));
+        s.u.uFocus.value = near * centred;
+        focus = Math.max(focus, s.u.uFocus.value);
+      }
+      vignette.style.opacity = String(1 - focus);
+      placeCover();
+
+      renderer.render(scene, camera);
+    }
+
+    function resize() {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = aspect();
+      camera.updateProjectionMatrix();
+      if (!flight && landed !== -1) cam.d = fitDistance(sheets[landed].w, sheets[landed].h);
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    let ready = false;
+    const whenReady = [];
+    manager.onLoad = () => {
+      ready = true;
+      whenReady.splice(0).forEach((fn) => fn());
+    };
+    setTimeout(() => manager.onLoad(), 6000);
+
+    return {
+      // Start rendering; if nothing has been shown yet, begin with a slow fly-in.
+      enter(i) {
+        startLoop();
+        const begin = () => {
+          if (landed === -1 && !flight) {
+            Object.assign(cam, OVERVIEW, { d: overviewDistance() });
+            flyTo(i, 3200);
+          }
+        };
+        if (ready) begin();
+        else whenReady.push(begin);
+      },
+      jumpTo(i) {
+        startLoop();
+        flight = null;
+        Object.assign(cam, focusState(sheets[i]));
+        land(i);
+      },
+      flyTo,
+      // Leave table mode: stop every video and hide the cover overlay.
+      release() {
+        running = false;
+        flight = null;
+        landed = -1;
+        tweens.length = 0;
+        for (const s of sheets) {
+          s.fade++;
+          s.u.uVideoMix.value = 0;
+          s.u.uVideo.value = s.poster;
+          if (s.live) slides[s.i].stop();
+          s.live = false;
+        }
+        clearTimeout(coverTimer);
+        coverEl.classList.remove("show", "active");
+        coverEl.style.transform = "";
+      },
+    };
+  }
+
+  const table = createTable();
+  let mode = table ? "table" : "flat";
+  document.body.classList.toggle("table", mode === "table");
+
   function go(i) {
     i = Math.max(0, Math.min(SETLIST.length - 1, i));
     if (i === current) return;
     current = i;
     slides[i].warm();
     if (slides[i + 1]) slides[i + 1].warm();
-    present(slides[i]);
+    if (mode === "table") table.flyTo(i);
+    else present(slides[i]);
     showLabel(i);
+  }
+
+  // T switches between the table and the plain full-screen player (a fallback for the gig).
+  function toggleMode() {
+    if (!table) return;
+    if (mode === "table") {
+      table.release();
+      shown = null;
+      mode = "flat";
+      document.body.classList.remove("table");
+      present(slides[current]);
+    } else {
+      slides.forEach((s) => {
+        s.el.classList.remove("active", "under");
+        s.stop();
+      });
+      shown = null;
+      mode = "table";
+      document.body.classList.add("table");
+      table.jumpTo(current);
+    }
+    flash(mode === "table" ? "tavolo" : "schermo intero");
   }
 
   // iPhone Safari has no Fullscreen API for pages, so this must never throw.
@@ -347,8 +842,6 @@
   });
 
   document.addEventListener("keydown", (e) => {
-    enterFullscreen();
-    keepAwake();
     switch (e.key) {
       case "ArrowRight":
       case "PageDown":
@@ -369,11 +862,17 @@
       case "R":
         setSpeed(1);
         break;
+      case "t":
+      case "T":
+        toggleMode();
+        break;
       default:
         if (/^[0-9]$/.test(e.key)) go(Number(e.key));
         else return;
     }
     e.preventDefault();
+    enterFullscreen();
+    keepAwake();
   });
 
   document.addEventListener("click", () => {
@@ -415,7 +914,15 @@
 
   document.addEventListener("pointercancel", () => (touch = null));
 
-  go(0);
+  if (mode === "table") {
+    current = 0;
+    slides[0].warm();
+    slides[1].warm();
+    table.enter(0);
+    showLabel(0);
+  } else {
+    go(0);
+  }
 </script>
 </body>
 </html>
