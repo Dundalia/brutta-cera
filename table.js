@@ -325,9 +325,10 @@ function updateSpread(now) {
 
 // "8-usxnc": an old cathode-ray TV standing at the back of the table (Poly Haven's
 // Television_01, CC0) with the cat video on its glass. The glass is lit from inside by
-// the picture index.html's tvSlide describes: scanlines, darker corners, and the
-// switch-off where it collapses into a bright line, then a dot. A faint cool light
-// from the screen falls on the table in front of it.
+// the picture index.html's tvSlide describes: scanlines, darker corners, the switch-on
+// when the camera arrives and the switch-off when it leaves, where the picture
+// collapses into a bright line, then a dot. A faint cool light from the screen falls
+// on the table in front of it.
 // The glass: where it is in the model's texture (u0, u1, v0, v1) and in the set's own
 // space (x0, x1, y0, y1, then the least z of the front). It is 4:3, like the picture,
 // which is drawn a little larger, overscanned like on a real set.
@@ -2783,7 +2784,8 @@ function depart() {
   if (landed === -1) return;
   const s = sheets[landed];
   landed = -1;
-  if (!s.videoTexture && !s.spread) hideCover();
+  if (s.tv) slides[s.i].leave(); // it switches off as the camera pulls away
+  else if (!s.videoTexture && !s.spread) hideCover();
 }
 
 function land(i) {
@@ -2806,11 +2808,9 @@ function land(i) {
   } else if (s.spread) {
     // nothing to start: the camera tours the spread while it is here
   } else if (s.tv) {
-    if (!s.live) {
-      s.live = true;
-      s.u.uVideo.value = s.videoTexture;
-      slide.start(); // it switches on
-    }
+    s.live = true;
+    s.u.uVideo.value = s.videoTexture;
+    if (!slide.isOn()) slide.start(); // it switches on
   } else {
     showCover();
     slide.start();
@@ -2819,7 +2819,7 @@ function land(i) {
   for (const o of sheets) {
     if (o === s || !o.live) continue;
     if (o.tv) {
-      // out of sight by now: just switch it off
+      // switched off as the camera left, and out of sight by now
       o.live = false;
       slides[o.i].stop();
       o.u.uVideo.value = o.poster;

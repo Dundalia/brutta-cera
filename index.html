@@ -616,12 +616,15 @@
     };
   }
 
-  // "8-usxnc": the cat video on an old cathode-ray TV. It plays once, then the set
-  // switches off the way a tube does (the picture collapses into a bright line across,
-  // the line into a dot, the dot fades), stays dark for a moment and comes back on.
+  // "8-usxnc": the cat video on an old cathode-ray TV, looping back and forth (the file
+  // is encoded as a boomerang: forwards, then backwards). The set switches on when the
+  // song comes up and off when it is left, the way a tube does: the picture collapses
+  // into a bright line across, the line into a dot, the dot fades.
   // Shared with table.js, which draws the same picture on the TV's glass.
   const TV_SONG = "8-usxnc";
-  const TV = { on: 0.6, off: 1.4, dark: 2.2 }; // seconds of each phase, at 1× speed
+  // seconds, at 1× speed: switching on, switching off, and how long a cut to the next
+  // song waits for the switch-off (until the picture is down to a dot)
+  const TV = { on: 0.6, off: 1.4, leave: 0.55 };
   const step01 = (a, b, x) => {
     const k = Math.min(1, Math.max(0, (x - a) / (b - a)));
     return k * k * (3 - 2 * k);
@@ -653,7 +656,7 @@
   }
 
   function tvSlide(name) {
-    const inner = videoSlide(name, false);
+    const inner = videoSlide(name);
     const v = inner.el;
     v.classList.remove("slide");
     const el = document.createElement("div");
@@ -678,10 +681,9 @@
         inner.setSpeed();
         v.play().catch(() => {});
       }
+      if (p === "dark") v.pause();
     }
-    v.addEventListener("ended", () => {
-      if (phase === "on" || phase === "play") enter("off");
-    });
+    const isOn = () => phase === "on" || phase === "play";
     // Plain player only: the table draws the picture itself.
     function paint(c) {
       if (document.body.classList.contains("table")) {
@@ -700,11 +702,11 @@
       last = now;
       if (phase === "on" && t >= TV.on) enter("play");
       else if (phase === "off" && t >= TV.off) enter("dark");
-      else if (phase === "dark" && t >= TV.dark) enter("on");
-      if ((phase === "on" || phase === "play") && v.paused && !v.ended && document.visibilityState === "visible") v.play().catch(() => {});
+      if (isOn() && v.paused && document.visibilityState === "visible") v.play().catch(() => {});
       slide.crt = crtShape(phase, t);
       paint(slide.crt);
-      loop = requestAnimationFrame(tick);
+      // switched off: nothing changes until it is switched on again
+      loop = phase === "dark" ? 0 : requestAnimationFrame(tick);
     }
     const slide = {
       el,
@@ -712,11 +714,18 @@
       tv: true,
       crt: crtShape("dark", 0),
       warm: inner.warm,
+      isOn,
       start() {
         cancelAnimationFrame(loop);
         last = performance.now();
         enter("on");
         loop = requestAnimationFrame(tick);
+      },
+      // Switch off; returns how many ms a cut should wait to let it be seen.
+      leave() {
+        if (isOn()) enter("off");
+        if (phase !== "off") return 0;
+        return (Math.max(0, TV.leave - t) / speed) * 1000;
       },
       stop() {
         cancelAnimationFrame(loop);
@@ -726,7 +735,7 @@
         inner.stop();
       },
       resume() {
-        if ((phase === "on" || phase === "play") && v.paused) v.play().catch(() => {});
+        if (isOn() && v.paused) v.play().catch(() => {});
       },
       setSpeed: inner.setSpeed,
       // it comes on from a dark screen, so there is no frame to wait for
@@ -743,8 +752,17 @@
 
   // Flat mode: put `next` on top and start it. The previous slide stays visible
   // underneath until `next` has actually painted a frame, so a cut never flashes black.
+  // A slide with a way of leaving (the TV switching off) gets to show it first.
+  let leaveTimer;
   function present(next) {
+    clearTimeout(leaveTimer);
     const prev = shown;
+    const wait = prev && prev !== next && prev.leave ? prev.leave() : 0;
+    if (wait > 0) leaveTimer = setTimeout(() => cut(prev, next), wait);
+    else cut(prev, next);
+  }
+
+  function cut(prev, next) {
     shown = next;
     next.el.classList.remove("under");
     next.el.classList.add("active");
@@ -882,6 +900,7 @@
   // T switches between the table and the plain full-screen player (a fallback for the gig).
   function toggleMode() {
     if (!table || mode === "pending") return;
+    clearTimeout(leaveTimer);
     if (mode === "table") {
       table.release();
       shown = null;
