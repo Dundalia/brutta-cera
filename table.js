@@ -34,12 +34,17 @@ const LAYOUT = [
   [0.04, 0.27, 4],
   [-0.5, 0.24, -12],
   [-1.12, 0.55, 0], // 7-quebec: the Polaroid spread (its cards are placed by quebec.js)
-  [0.1, -0.8, -6], // 8-usxnc: the TV at the back of the table, facing the room
+  [0.1, -0.8, -3], // 8-usxnc: the TV at the back of the table, against the wall
 ];
 const SHEET_W = 0.3;
 const SHEET_H = 0.225;
 const COVER_SIZE = 0.25;
 const WOOD_SIZE = 1.55; // metres covered by one tile of the wood photo
+// The table runs 5 m across and from the wall (behind the TV) to 2 m in front.
+const TABLE_W = 5;
+const TABLE_BACK = -1.1;
+const TABLE_FRONT = 2;
+const WALL_Z = -1.13;
 const VFOV = (30 * Math.PI) / 180;
 const FIT_MARGIN = 0.96;
 const MAX_TILT = (7 * Math.PI) / 180;
@@ -123,14 +128,14 @@ scene.add(lamp, lamp.target);
 function tableTexture(url, srgb) {
   const t = textures.load(url);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(5 / WOOD_SIZE, 4 / WOOD_SIZE);
+  t.repeat.set(TABLE_W / WOOD_SIZE, (TABLE_FRONT - TABLE_BACK) / WOOD_SIZE);
   t.anisotropy = aniso;
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
 const woodArm = tableTexture("assets/table/wood_arm_1k.jpg"); // AO, roughness, metalness
 const tableTop = new THREE.Mesh(
-  new THREE.PlaneGeometry(5, 4),
+  new THREE.PlaneGeometry(TABLE_W, TABLE_FRONT - TABLE_BACK),
   new THREE.MeshStandardMaterial({
     map: tableTexture("assets/table/wood_diff_" + (small ? "2k" : "4k") + ".jpg", true),
     normalMap: tableTexture("assets/table/wood_nor_2k.jpg"),
@@ -142,8 +147,41 @@ const tableTop = new THREE.Mesh(
   })
 );
 tableTop.rotation.x = -Math.PI / 2;
+tableTop.position.z = (TABLE_BACK + TABLE_FRONT) / 2;
 tableTop.receiveShadow = true;
 scene.add(tableTop);
+
+// --- the wall the table is pushed against: old stained wallpaper (Poly Haven, CC0) ---
+// Only seen when the camera looks across the table, at the TV. The desk lamp spills
+// onto it from above, and the TV throws its shadow there.
+{
+  const tex = (url, srgb) => {
+    const t = textures.load(url);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(TABLE_W / 2.5, 2.6 / 2.5); // one tile is 2.5 m of wall
+    t.anisotropy = aniso;
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  const wall = new THREE.Mesh(
+    new THREE.PlaneGeometry(TABLE_W, 2.6),
+    new THREE.MeshStandardMaterial({ map: tex("assets/wall/wallpaper_diff_1k.jpg", true), normalMap: tex("assets/wall/wallpaper_nor_1k.jpg"), color: 0xd6d6c6, roughness: 0.92 })
+  );
+  wall.position.set(0, 0.8, WALL_Z);
+  wall.receiveShadow = true;
+  scene.add(wall);
+  const spill = new THREE.SpotLight(0xffd8a8, 3, 3, 0.6, 1, 2);
+  spill.position.copy(lamp.position);
+  spill.target.position.set(0.1, 0.35, WALL_Z);
+  spill.castShadow = true;
+  spill.shadow.mapSize.set(1024, 1024);
+  spill.shadow.camera.near = 0.3;
+  spill.shadow.camera.far = 2.5;
+  spill.shadow.bias = -0.0004;
+  spill.shadow.normalBias = 0.01;
+  spill.shadow.radius = 3;
+  scene.add(spill, spill.target);
+}
 
 // --- soft contact shadows under the sheets (pre-blurred decals) --------------------
 function shadowTexture(blur) {
@@ -296,7 +334,7 @@ function updateSpread(now) {
 const TV_GLASS_UV = [0.03, 0.362, 0.7, 0.96];
 const TV_GLASS = [-0.27, 0.14, 0.1, 0.42, 0.16];
 const TV_PICTURE = { centre: [-0.0654, 0.2592], half: [0.197, 0.149] };
-const TV_AIM = new THREE.Vector3(-0.045, 0.245, 0.2); // what the camera looks at, in the set's own space
+const TV_AIM = new THREE.Vector3(-0.015, 0.25, 0.2); // what the camera looks at, in the set's own space
 const TV_TILT = (82 * Math.PI) / 180; // looking at it from in front, a touch from above
 const TV_LIGHT = 0.35;
 function television(i) {
@@ -370,8 +408,8 @@ function television(i) {
     holder.add(shade(g.scene));
     renderer.shadowMap.needsUpdate = true;
   });
-  // framed a little larger than the set itself (0.6 x 0.46 m)
-  return { i, tv: true, w: 0.66, h: 0.5, x, z, rot, u, poster: black, videoTexture, light, live: false, fade: 0 };
+  // framed close: the screen fills most of the picture, the knobs just in (the set is 0.6 x 0.46 m)
+  return { i, tv: true, w: 0.52, h: 0.42, x, z, rot, u, poster: black, videoTexture, light, live: false, fade: 0 };
 }
 
 // Camera state looking at the TV.
