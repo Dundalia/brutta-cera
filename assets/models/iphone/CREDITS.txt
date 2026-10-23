@@ -1,0 +1,7 @@
+iphone.glb is "Apple iPhone 15 Pro Max Black" by polyman
+(https://sketchfab.com/Polyman_3D), from
+https://sketchfab.com/3d-models/apple-iphone-15-pro-max-black-df17520841214c1792fb8a44c6783ee7
+licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+
+Changes: the back glass, camera module and lenses were removed (the phones lie face up),
+the Draco-compressed meshes were decoded and quantized with glTF-Transform.

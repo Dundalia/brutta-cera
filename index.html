@@ -156,6 +156,76 @@
     opacity: 0 !important;
     z-index: -1 !important;
   }
+  /* "9-senza nome" in the plain player: the two phones side by side on the table.
+     Lock screen, unlock and lock are set from script (see phonesSlide). */
+  #phones {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 5vh;
+    background: #1d120a url("assets/table/wood_diff_2k.jpg") center / 1550px 1550px;
+    overflow: hidden;
+  }
+  #phones.active, #phones.under {
+    display: flex;
+  }
+  #phones::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 80% 75% at 50% 46%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.55) 100%);
+  }
+  .phone {
+    position: relative;
+    height: min(84vh, 92vw);
+    aspect-ratio: 77.6 / 159.6;
+    box-sizing: border-box;
+    padding: 1.4%;
+    border-radius: 13% / 6.3%;
+    background: #1a1a1c;
+    box-shadow: inset 0 0 0 0.3vh #77736d, 0 1.5vh 3.5vh rgba(0, 0, 0, 0.6);
+  }
+  .phone:first-child {
+    transform: rotate(-4deg);
+  }
+  .phone:last-child {
+    transform: translateY(2.5vh) rotate(5deg);
+  }
+  .phone-screen {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    border-radius: 11.5% / 5.4%;
+    background: #000;
+  }
+  .phone-screen video, .phone-screen canvas, .phone-black {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .phone-screen video {
+    object-fit: cover;
+  }
+  .phone-black {
+    background: #000;
+  }
+  .phone-island {
+    position: absolute;
+    top: 2.3%;
+    left: 50%;
+    width: 29%;
+    height: 3.3%;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: #000;
+  }
+  body.table #phones {
+    display: block !important;
+    opacity: 0 !important;
+    z-index: -1 !important;
+  }
   /* table mode: the WebGL scene replaces the plain player */
   #scene, #vignette {
     position: fixed;
@@ -415,8 +485,8 @@
 </script>
 <script>
   // Ordered setlist: index = key to press. "0-copertina" is the animated cover above,
-  // "7-quebec" is a spread of Polaroids, "8-usxnc" plays on an old TV, the others are
-  // files in videos-out/.
+  // "7-quebec" is a spread of Polaroids, "8-usxnc" plays on an old TV, "9-senza nome"
+  // on two phones, the others are files in videos-out/.
   // Shown as "number · title".
   const SETLIST = [
     "0-copertina",
@@ -428,6 +498,7 @@
     "6-andarcene",
     "7-quebec",
     "8-usxnc",
+    "9-senza nome",
   ];
   const COVER = "0-copertina";
   const LABEL_MS = 3000;
@@ -747,8 +818,230 @@
     return slide;
   }
 
+  // "9-senza nome": two iPhones side by side, both scrolling the same screen recording,
+  // the second half its length ahead of the first. When the song comes up their screens
+  // wake on the lock screen (the Brutta Cera cover, the date and the time) and are
+  // swiped open, the second a beat after the first; when it is left the lock screen
+  // drops back down and they go dark. These moves run in real time, whatever the speed.
+  // Shared with table.js, which draws the same on the phones' screens.
+  const PHONES_SONG = "9-senza nome";
+  const PHONE = { wake: 0.3, hold: 1.1, unlock: 0.45, relock: 0.35, rest: 0.35, off: 0.3, lag: 0.3, leave: 0.75 }; // seconds
+  const PHONE_ARRIVE = PHONE.wake + PHONE.hold + PHONE.unlock;
+  const PHONE_LEAVE = PHONE.relock + PHONE.rest + PHONE.off;
+
+  // One phone's screen at time t of a phase, starting `from` where it was: on = how lit
+  // the screen is, lock = how much of it the lock screen covers (1 = all, 0 = swiped away).
+  function phoneShape(phase, t, from) {
+    if (phase === "arrive") {
+      return { on: from.on + (1 - from.on) * step01(0, PHONE.wake, t), lock: from.lock * (1 - step01(PHONE.wake + PHONE.hold, PHONE_ARRIVE, t)) };
+    }
+    if (phase === "leave") {
+      return { on: from.on * (1 - step01(PHONE.relock + PHONE.rest, PHONE_LEAVE, t)), lock: from.lock + (1 - from.lock) * step01(0, PHONE.relock, t) };
+    }
+    return phase === "open" ? { on: 1, lock: 0 } : { on: 0, lock: 1 };
+  }
+
+  // The lock screen in the iOS style on the cover: date, a big clock, the torch and
+  // camera buttons and the home bar, drawn at the phone's own shape (430 x 932 points).
+  const lockArt = new Image();
+  lockArt.src = "public/cover.png";
+  function drawLockScreen(c) {
+    const g = c.getContext("2d");
+    const w = c.width;
+    const h = c.height;
+    const k = w / 430;
+    const font = '-apple-system, "SF Pro Display", "Helvetica Neue", Arial, sans-serif';
+    g.fillStyle = "#f5f1e3";
+    g.fillRect(0, 0, w, h);
+    if (lockArt.naturalWidth) g.drawImage(lockArt, 0, h * 0.56 - w / 2, w, w);
+    const now = new Date();
+    g.fillStyle = "#1b1107";
+    g.textAlign = "center";
+    g.textBaseline = "alphabetic";
+    g.font = `600 ${21 * k}px ${font}`;
+    g.fillText(now.toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long" }), w / 2, 128 * k);
+    g.font = `700 ${104 * k}px ${font}`;
+    g.fillText(now.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }), w / 2, 232 * k);
+    // status bar: signal and battery
+    g.font = `600 ${17 * k}px ${font}`;
+    g.textAlign = "left";
+    g.fillText("Brutta Cera", 34 * k, 34 * k);
+    g.strokeStyle = "#1b1107";
+    g.lineWidth = 1.6 * k;
+    g.beginPath();
+    g.roundRect(362 * k, 21 * k, 27 * k, 13 * k, 3.5 * k);
+    g.stroke();
+    g.beginPath();
+    g.roundRect(364.5 * k, 23.5 * k, 18 * k, 8 * k, 1.8 * k);
+    g.fill();
+    // torch and camera
+    for (const [x, glyph] of [[78, "torch"], [352, "camera"]]) {
+      const y = h - 96 * k;
+      g.fillStyle = "rgba(27, 17, 7, 0.14)";
+      g.beginPath();
+      g.arc(x * k, y, 25 * k, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = "#1b1107";
+      g.beginPath();
+      if (glyph === "torch") {
+        g.roundRect((x - 5) * k, y - 11 * k, 10 * k, 22 * k, 2.5 * k);
+      } else {
+        g.roundRect((x - 11) * k, y - 7 * k, 22 * k, 15 * k, 3 * k);
+        g.roundRect((x - 4) * k, y - 10 * k, 8 * k, 4 * k, 1 * k);
+      }
+      g.fill();
+      if (glyph === "camera") {
+        g.fillStyle = "#e4dece";
+        g.beginPath();
+        g.arc(x * k, y + 0.5 * k, 4.2 * k, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+    // home bar
+    g.fillStyle = "#1b1107";
+    g.beginPath();
+    g.roundRect(w / 2 - 70 * k, h - 16 * k, 140 * k, 5.5 * k, 2.75 * k);
+    g.fill();
+  }
+
+  function phonesSlide(name) {
+    const el = document.createElement("div");
+    el.className = "slide";
+    el.id = "phones";
+    const phones = [0, 1].map(() => {
+      const phone = document.createElement("div");
+      phone.className = "phone";
+      phone.innerHTML = '<div class="phone-screen"><video muted loop playsinline preload="metadata"></video><canvas width="720" height="1561"></canvas><div class="phone-black"></div></div><div class="phone-island"></div>';
+      el.appendChild(phone);
+      const v = phone.querySelector("video");
+      v.muted = true;
+      v.src = "videos-out/" + encodeURIComponent(name) + ".mp4";
+      return { v, lock: phone.querySelector("canvas"), black: phone.querySelector(".phone-black"), shape: phoneShape("dark", 0) };
+    });
+    document.body.appendChild(el);
+    const videos = phones.map((p) => p.v);
+
+    // the clock: redrawn when the minute changes (and once the cover has loaded)
+    let minute = -1;
+    function redraw() {
+      phones.forEach((p) => drawLockScreen(p.lock));
+      slide.lockVersion++;
+    }
+    lockArt.addEventListener("load", () => redraw());
+    setInterval(() => {
+      const m = new Date().getMinutes();
+      if (m !== minute) {
+        minute = m;
+        redraw();
+      }
+    }, 5000);
+
+    // the second phone runs half the recording ahead
+    function rewind() {
+      videos[0].currentTime = 0;
+      const half = () => (videos[1].currentTime = videos[1].duration / 2);
+      if (videos[1].duration) half();
+      else videos[1].addEventListener("loadedmetadata", half, { once: true });
+    }
+    function play() {
+      videos.forEach((v) => {
+        v.defaultPlaybackRate = v.playbackRate = speed;
+        v.play().catch(() => {});
+      });
+    }
+
+    let phase = "dark";
+    let t0 = 0;
+    let loop = 0;
+    let flat = false;
+    const isOn = () => phase === "arrive" || phase === "open";
+    function enter(p) {
+      phones.forEach((ph) => (ph.from = { ...ph.shape }));
+      phase = p;
+      t0 = performance.now();
+      if (p === "dark") videos.forEach((v) => v.pause());
+    }
+    // Plain player only: the table draws the screens itself.
+    function paint() {
+      if (document.body.classList.contains("table")) {
+        if (flat) phones.forEach((p) => (p.lock.style.transform = p.v.style.transform = p.v.style.filter = p.black.style.opacity = ""));
+        flat = false;
+        return;
+      }
+      flat = true;
+      phones.forEach(({ v, lock, black, shape }) => {
+        lock.style.transform = `translateY(${-(1 - shape.lock) * 100}%)`;
+        v.style.transform = `scale(${1 + 0.08 * shape.lock})`;
+        v.style.filter = shape.lock > 0 ? `brightness(${1 - 0.6 * shape.lock})` : "";
+        black.style.opacity = String(1 - shape.on);
+      });
+    }
+    function tick(now) {
+      const t = (now - t0) / 1000;
+      phones.forEach((p, k) => (p.shape = phoneShape(phase, Math.max(0, t - k * PHONE.lag), p.from)));
+      if (phase === "arrive" && t >= PHONE_ARRIVE + PHONE.lag) enter("open");
+      else if (phase === "leave" && t >= PHONE_LEAVE + PHONE.lag) enter("dark");
+      if (isOn() && document.visibilityState === "visible") videos.forEach((v) => v.paused && v.play().catch(() => {}));
+      slide.screens = phones.map((p) => p.shape);
+      paint();
+      loop = phase === "dark" ? 0 : requestAnimationFrame(tick);
+    }
+    const slide = {
+      el,
+      videos,
+      phones: true,
+      lockCanvas: phones[0].lock,
+      lockVersion: 0,
+      screens: phones.map((p) => p.shape),
+      isOn,
+      warm() {
+        videos.forEach((v) => (v.preload = "auto"));
+      },
+      start() {
+        cancelAnimationFrame(loop);
+        if (phase === "dark") rewind();
+        play();
+        enter("arrive");
+        loop = requestAnimationFrame(tick);
+      },
+      // Lock; returns how many ms a cut should wait to let it be seen.
+      leave() {
+        if (isOn()) enter("leave");
+        if (phase !== "leave") return 0;
+        return Math.max(0, PHONE.leave * 1000 - (performance.now() - t0));
+      },
+      stop() {
+        cancelAnimationFrame(loop);
+        phones.forEach((p) => (p.shape = phoneShape("dark", 0)));
+        enter("dark");
+        slide.screens = phones.map((p) => p.shape);
+        paint();
+        rewind();
+      },
+      resume() {
+        if (isOn()) play();
+      },
+      setSpeed() {
+        videos.forEach((v) => (v.defaultPlaybackRate = v.playbackRate = speed));
+      },
+      onPainted(fn) {
+        requestAnimationFrame(() => requestAnimationFrame(fn));
+      },
+    };
+    redraw();
+    return slide;
+  }
+
   const slides = SETLIST.map((name) =>
-    name === COVER ? coverSlide() : name === SPREAD_SONG ? spreadSlide() : name === TV_SONG ? tvSlide(name) : videoSlide(name)
+    name === COVER
+      ? coverSlide()
+      : name === SPREAD_SONG
+        ? spreadSlide()
+        : name === TV_SONG
+          ? tvSlide(name)
+          : name === PHONES_SONG
+            ? phonesSlide(name)
+            : videoSlide(name)
   );
 
   // Flat mode: put `next` on top and start it. The previous slide stays visible

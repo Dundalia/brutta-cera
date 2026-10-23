@@ -35,6 +35,7 @@ const LAYOUT = [
   [-0.5, 0.24, -12],
   [-1.12, 0.55, 0], // 7-quebec: the Polaroid spread (its cards are placed by quebec.js)
   [0.1, -0.8, -3], // 8-usxnc: the TV at the back of the table, against the wall
+  [0.8, 0.62, 4], // 9-senza nome: the two phones (each placed within the pair by PHONE_POSES)
 ];
 const SHEET_W = 0.3;
 const SHEET_H = 0.225;
@@ -431,9 +432,96 @@ function updateTv(now) {
   }
 }
 
+// "9-senza nome": two iPhones lying face up side by side, a little askew, scrolling the
+// same screen recording half its length apart (see phonesSlide in index.html). On
+// arrival their screens wake on the lock screen and are swiped open; on leaving they
+// lock and go dark. The phone is "Apple iPhone 15 Pro Max Black" by polyman
+// (https://sketchfab.com/3d-models/apple-iphone-15-pro-max-black-df17520841214c1792fb8a44c6783ee7),
+// CC BY 4.0, with its back (never seen) taken off and its meshes decoded and quantized.
+const PHONE_SCREEN = "xXDHkMplTIDAXLN"; // the display, in the model
+const PHONE_POSES = [[-0.047, 0.004, 3], [0.048, -0.009, -5]]; // each phone in the pair: x, z (m), turn (degrees)
+const PHONE_FIT = 0.45 / 0.4614; // the recording is a touch narrower than the screen: crop its top and bottom
+function phonePair(i) {
+  const [x, z, deg] = LAYOUT[i];
+  const rot = (deg * Math.PI) / 180;
+  const slide = slides[i];
+  const black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  black.needsUpdate = true;
+  const lock = new THREE.CanvasTexture(slide.lockCanvas);
+  lock.anisotropy = aniso;
+  const screens = slide.videos.map((video) => {
+    const tex = new THREE.VideoTexture(video);
+    tex.minFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    return { videoTexture: tex, u: { uPhoneVideo: { value: black }, uPhoneLock: { value: lock }, uPhone: { value: new THREE.Vector2(0, 1) } } };
+  });
+  const holder = new THREE.Group();
+  holder.position.set(x, 0, z);
+  holder.rotation.y = rot;
+  scene.add(holder);
+  // a dark glossy glass that shows the screen's picture from inside
+  const blank = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+  blank.needsUpdate = true;
+  const screenMaterial = (u) => {
+    const m = new THREE.MeshStandardMaterial({ color: 0x050506, map: blank, roughness: 0.06, metalness: 0, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    m.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, u);
+      shader.fragmentShader =
+        "uniform sampler2D uPhoneVideo;\nuniform sampler2D uPhoneLock;\nuniform vec2 uPhone;\n" +
+        "vec3 phoneToLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }\n" +
+        // uPhone: x = how lit, y = how much of the screen the lock screen covers
+        "vec3 phoneScreen(vec2 uv) {\n" +
+        "\tfloat lock = uPhone.y;\n" +
+        // the lock screen slides up off the top as it is swiped open
+        "\tvec2 lu = vec2(uv.x, uv.y - (1.0 - lock));\n" +
+        "\tvec3 lockCol = phoneToLinear(texture2D(uPhoneLock, clamp(lu, 0.0, 1.0)).rgb);\n" +
+        // underneath, the app comes forward and brightens
+        "\tvec2 au = 0.5 + (uv - 0.5) / (1.0 + 0.08 * lock);\n" +
+        `\tau.y = 0.5 + (au.y - 0.5) * ${PHONE_FIT.toFixed(4)};\n` +
+        "\tvec3 app = phoneToLinear(texture2D(uPhoneVideo, au).rgb) * (1.0 - 0.6 * lock);\n" +
+        "\treturn mix(app, lockCol, step(0.0, lu.y)) * uPhone.x * 0.92;\n}\n" +
+        shader.fragmentShader.replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n\ttotalEmissiveRadiance += phoneScreen(vMapUv);");
+    };
+    return m;
+  };
+  gltf.load("assets/models/iphone/iphone.glb", (g) => {
+    PHONE_POSES.forEach(([px, pz, pdeg], k) => {
+      const phone = k === 0 ? g.scene : g.scene.clone(true);
+      phone.traverse((o) => {
+        if (o.isMesh && o.name === PHONE_SCREEN) o.material = screenMaterial(screens[k].u);
+      });
+      // face up: the screen faces -z in the model, its top is +y
+      phone.rotation.x = Math.PI / 2;
+      const turn = new THREE.Group();
+      turn.add(shade(phone));
+      turn.rotation.y = Math.PI + (pdeg * Math.PI) / 180;
+      turn.position.set(px, 0, pz);
+      holder.add(turn);
+      holder.updateMatrixWorld(true);
+      turn.position.y = -new THREE.Box3().setFromObject(turn).min.y;
+    });
+    renderer.shadowMap.needsUpdate = true;
+  });
+  return { i, phones: true, screens, lock, lockVersion: -1, w: 0.25, h: 0.21, x, z, rot, u: { uVideo: { value: black }, uVideoMix: { value: 0 }, uFocus: { value: 0 } }, poster: black, videoTexture: null, live: false, fade: 0 };
+}
+
+// The screens follow the slide: lock screen, swipe, lit or dark.
+function updatePhones() {
+  for (const s of sheets) {
+    if (!s.phones) continue;
+    const slide = slides[s.i];
+    if (s.lockVersion !== slide.lockVersion) {
+      s.lockVersion = slide.lockVersion;
+      s.lock.needsUpdate = true;
+    }
+    slide.screens.forEach((c, k) => s.screens[k].u.uPhone.value.set(c.on, c.lock));
+  }
+}
+
 const sheets = SETLIST.map((name, i) => {
   if (slides[i].spread) return polaroidSpread(i);
   if (slides[i].tv) return television(i);
+  if (slides[i].phones) return phonePair(i);
   const isCover = name === COVER;
   const w = isCover ? COVER_SIZE : SHEET_W;
   const h = isCover ? COVER_SIZE : SHEET_H;
@@ -2785,7 +2873,8 @@ function depart() {
   if (landed === -1) return;
   const s = sheets[landed];
   landed = -1;
-  if (s.tv) slides[s.i].leave(); // it switches off as the camera pulls away
+  // the TV switches off and the phones lock as the camera pulls away
+  if (slides[s.i].leave) slides[s.i].leave();
   else if (!s.videoTexture && !s.spread) hideCover();
 }
 
@@ -2794,7 +2883,15 @@ function land(i) {
   const s = sheets[i];
   const slide = slides[i];
   setShown(slide);
-  if (s.videoTexture) {
+  if (s.tv) {
+    s.live = true;
+    s.u.uVideo.value = s.videoTexture;
+    if (!slide.isOn()) slide.start(); // it switches on
+  } else if (s.phones) {
+    s.live = true;
+    s.screens.forEach((p) => (p.u.uPhoneVideo.value = p.videoTexture));
+    if (!slide.isOn()) slide.start(); // they wake and are unlocked
+  } else if (s.videoTexture) {
     s.fade++;
     if (!s.live) {
       s.live = true;
@@ -2808,10 +2905,6 @@ function land(i) {
     }
   } else if (s.spread) {
     // nothing to start: the camera tours the spread while it is here
-  } else if (s.tv) {
-    s.live = true;
-    s.u.uVideo.value = s.videoTexture;
-    if (!slide.isOn()) slide.start(); // it switches on
   } else {
     showCover();
     slide.start();
@@ -2819,11 +2912,12 @@ function land(i) {
   // Sheets left behind go back to their finished drawing.
   for (const o of sheets) {
     if (o === s || !o.live) continue;
-    if (o.tv) {
-      // switched off as the camera left, and out of sight by now
+    if (o.tv || o.phones) {
+      // switched off (or locked) as the camera left, and out of sight by now
       o.live = false;
       slides[o.i].stop();
       o.u.uVideo.value = o.poster;
+      if (o.phones) o.screens.forEach((p) => (p.u.uPhoneVideo.value = o.poster));
       continue;
     }
     const token = ++o.fade;
@@ -2903,6 +2997,7 @@ function frame(now) {
   flicker(now / 1000);
   updateSpread(now);
   updateTv(now);
+  updatePhones();
   const dt = spreadClock ? Math.min(0.1, (now - spreadClock) / 1000) : 0;
   spreadClock = now;
   if (!flight && landed !== -1 && sheets[landed].spread) {
@@ -2943,7 +3038,7 @@ function frame(now) {
   // A sheet shows its exact colours only when the camera sits right on it.
   let focus = 0;
   for (const s of sheets) {
-    if (s.tv) continue;
+    if (s.tv || s.phones) continue;
     const fit = fitDistance(s.w, s.h);
     const near = 1 - smooth(fit * 1.01, fit * 1.35, cam.d);
     const centred = 1 - smooth(0.004, 0.05, Math.hypot(cam.x - s.x, cam.z - s.z));
@@ -3013,6 +3108,7 @@ manager.onLoad = async () => {
   for (const s of sheets) {
     if (s.poster) all.add(s.poster);
     if (s.spread) s.spread.forEach((c) => c.frames.forEach((t) => all.add(t)));
+    if (s.phones) all.add(s.lock);
   }
   let done = 0;
   for (const tex of all) {
@@ -3072,6 +3168,7 @@ attachTable({
       s.fade++;
       s.u.uVideoMix.value = 0;
       s.u.uVideo.value = s.poster;
+      if (s.phones) s.screens.forEach((p) => (p.u.uPhoneVideo.value = s.poster));
       if (s.live) slides[s.i].stop();
       s.live = false;
     }
