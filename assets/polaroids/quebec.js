@@ -6,19 +6,19 @@ window.QUEBEC = {
    "frames": [
     "assets/polaroids/q00-0.jpg"
    ],
-   "x": -0.8811,
-   "z": 0.2764,
-   "rot": 3.5,
-   "layer": 2
+   "x": -0.7839,
+   "z": 0.5782,
+   "rot": -5.2,
+   "layer": 18
   },
   {
    "frames": [
     "assets/polaroids/q01-0.jpg"
    ],
-   "x": -0.9815,
-   "z": 0.2723,
-   "rot": 9.8,
-   "layer": 12
+   "x": -1.1376,
+   "z": 0.4817,
+   "rot": 7.1,
+   "layer": 0
   },
   {
    "frames": [
@@ -26,103 +26,103 @@ window.QUEBEC = {
     "assets/polaroids/q02-1.jpg",
     "assets/polaroids/q02-2.jpg"
    ],
-   "x": -1.0693,
-   "z": 0.2612,
-   "rot": 1.5,
-   "layer": 9
+   "x": -1.2997,
+   "z": 0.3972,
+   "rot": -2.9,
+   "layer": 28
   },
   {
    "frames": [
     "assets/polaroids/q03-0.jpg"
    ],
-   "x": -1.1879,
-   "z": 0.2762,
-   "rot": -8.0,
-   "layer": 18
+   "x": -1.0716,
+   "z": 0.3955,
+   "rot": -4.9,
+   "layer": 19
   },
   {
    "frames": [
     "assets/polaroids/q04-0.jpg",
     "assets/polaroids/q04-1.jpg"
    ],
-   "x": -1.2663,
-   "z": 0.261,
-   "rot": -7.2,
-   "layer": 13
+   "x": -0.9811,
+   "z": 0.5128,
+   "rot": 0.1,
+   "layer": 22
   },
   {
    "frames": [
     "assets/polaroids/q05-0.jpg",
     "assets/polaroids/q05-1.jpg"
    ],
-   "x": -1.374,
-   "z": 0.2675,
-   "rot": 8.0,
-   "layer": 6
+   "x": -1.1158,
+   "z": 0.6923,
+   "rot": -25.0,
+   "layer": 25
   },
   {
    "frames": [
     "assets/polaroids/q06-0.jpg",
     "assets/polaroids/q06-1.jpg"
    ],
-   "x": -0.8688,
-   "z": 0.3925,
-   "rot": 9.0,
-   "layer": 17
+   "x": -1.3397,
+   "z": 0.6808,
+   "rot": -1.6,
+   "layer": 30
   },
   {
    "frames": [
     "assets/polaroids/q07-0.jpg"
    ],
-   "x": -0.9605,
-   "z": 0.3777,
-   "rot": -3.4,
-   "layer": 28
+   "x": -1.0086,
+   "z": 0.2429,
+   "rot": 22.3,
+   "layer": 2
   },
   {
    "frames": [
     "assets/polaroids/q08-0.jpg"
    ],
-   "x": -1.0829,
-   "z": 0.387,
-   "rot": -3.3,
-   "layer": 4
+   "x": -0.9148,
+   "z": 0.5851,
+   "rot": -18.6,
+   "layer": 21
   },
   {
    "frames": [
     "assets/polaroids/q09-0.jpg"
    ],
-   "x": -1.1853,
-   "z": 0.391,
-   "rot": 12.3,
-   "layer": 8
+   "x": -1.1604,
+   "z": 0.5681,
+   "rot": -5.6,
+   "layer": 5
   },
   {
    "frames": [
     "assets/polaroids/q10-0.jpg"
    ],
-   "x": -1.2681,
-   "z": 0.3865,
-   "rot": 8.9,
-   "layer": 21
+   "x": -1.2375,
+   "z": 0.3422,
+   "rot": -13.8,
+   "layer": 14
   },
   {
    "frames": [
     "assets/polaroids/q11-0.jpg"
    ],
-   "x": -1.3879,
-   "z": 0.3916,
-   "rot": 9.1,
-   "layer": 30
+   "x": -0.9893,
+   "z": 0.7297,
+   "rot": 5.9,
+   "layer": 9
   },
   {
    "frames": [
     "assets/polaroids/q12-0.jpg"
    ],
-   "x": -0.8773,
-   "z": 0.5167,
-   "rot": 7.2,
-   "layer": 22
+   "x": -0.9948,
+   "z": 0.3396,
+   "rot": -4.6,
+   "layer": 12
   },
   {
    "frames": [
@@ -130,92 +130,92 @@ window.QUEBEC = {
     "assets/polaroids/q13-1.jpg",
     "assets/polaroids/q13-2.jpg"
    ],
-   "x": -0.9773,
-   "z": 0.5134,
-   "rot": 4.1,
-   "layer": 10
+   "x": -0.9497,
+   "z": 0.407,
+   "rot": -8.3,
+   "layer": 23
   },
   {
    "frames": [
     "assets/polaroids/q14-0.jpg"
    ],
-   "x": -1.0675,
-   "z": 0.4979,
-   "rot": -2.5,
-   "layer": 3
+   "x": -1.1468,
+   "z": 0.2895,
+   "rot": -6.2,
+   "layer": 15
   },
   {
    "frames": [
     "assets/polaroids/q15-0.jpg",
     "assets/polaroids/q15-1.jpg"
    ],
-   "x": -1.185,
-   "z": 0.513,
-   "rot": -12.8,
-   "layer": 27
+   "x": -1.3526,
+   "z": 0.5915,
+   "rot": 20.9,
+   "layer": 24
   },
   {
    "frames": [
     "assets/polaroids/q16-0.jpg",
     "assets/polaroids/q16-1.jpg"
    ],
-   "x": -1.2691,
-   "z": 0.5122,
-   "rot": 12.8,
-   "layer": 24
+   "x": -1.244,
+   "z": 0.6811,
+   "rot": -19.1,
+   "layer": 27
   },
   {
    "frames": [
     "assets/polaroids/q17-0.jpg"
    ],
-   "x": -1.3859,
-   "z": 0.514,
-   "rot": 6.6,
-   "layer": 32
+   "x": -1.244,
+   "z": 0.4958,
+   "rot": 3.9,
+   "layer": 11
   },
   {
    "frames": [
     "assets/polaroids/q18-0.jpg"
    ],
-   "x": -0.8607,
-   "z": 0.6237,
-   "rot": -2.3,
-   "layer": 11
+   "x": -0.8405,
+   "z": 0.4535,
+   "rot": -13.0,
+   "layer": 13
   },
   {
    "frames": [
     "assets/polaroids/q19-0.jpg"
    ],
-   "x": -0.9603,
-   "z": 0.633,
-   "rot": -3.9,
-   "layer": 1
+   "x": -0.712,
+   "z": 0.5209,
+   "rot": -28.7,
+   "layer": 20
   },
   {
    "frames": [
     "assets/polaroids/q20-0.jpg"
    ],
-   "x": -1.0709,
-   "z": 0.6268,
-   "rot": -8.9,
-   "layer": 29
+   "x": -0.7614,
+   "z": 0.4573,
+   "rot": -17.3,
+   "layer": 6
   },
   {
    "frames": [
     "assets/polaroids/q21-0.jpg"
    ],
-   "x": -1.1731,
-   "z": 0.6359,
-   "rot": 3.3,
-   "layer": 31
+   "x": -1.0728,
+   "z": 0.5648,
+   "rot": -20.5,
+   "layer": 7
   },
   {
    "frames": [
     "assets/polaroids/q22-0.jpg"
    ],
-   "x": -1.2729,
-   "z": 0.6303,
-   "rot": -1.6,
+   "x": -0.9144,
+   "z": 0.6725,
+   "rot": 4.8,
    "layer": 16
   },
   {
@@ -224,129 +224,129 @@ window.QUEBEC = {
     "assets/polaroids/q23-1.jpg",
     "assets/polaroids/q23-2.jpg"
    ],
-   "x": -1.3706,
-   "z": 0.622,
-   "rot": -14.0,
-   "layer": 5
+   "x": -1.0259,
+   "z": 0.6654,
+   "rot": 16.8,
+   "layer": 29
   },
   {
    "frames": [
     "assets/polaroids/q24-0.jpg"
    ],
-   "x": -0.8805,
-   "z": 0.7374,
-   "rot": -9.3,
-   "layer": 20
+   "x": -1.1895,
+   "z": 0.3996,
+   "rot": -3.1,
+   "layer": 17
   },
   {
    "frames": [
     "assets/polaroids/q25-0.jpg"
    ],
-   "x": -0.97,
-   "z": 0.7342,
-   "rot": 12.2,
-   "layer": 25
+   "x": -1.2896,
+   "z": 0.7616,
+   "rot": -19.0,
+   "layer": 4
   },
   {
    "frames": [
     "assets/polaroids/q26-0.jpg",
     "assets/polaroids/q26-1.jpg"
    ],
-   "x": -1.0767,
-   "z": 0.7458,
-   "rot": 6.2,
-   "layer": 19
+   "x": -1.0777,
+   "z": 0.3211,
+   "rot": -22.1,
+   "layer": 32
   },
   {
    "frames": [
     "assets/polaroids/q27-0.jpg",
     "assets/polaroids/q27-1.jpg"
    ],
-   "x": -1.1655,
-   "z": 0.7327,
-   "rot": 5.1,
-   "layer": 15
+   "x": -0.9076,
+   "z": 0.5013,
+   "rot": 3.5,
+   "layer": 31
   },
   {
    "frames": [
     "assets/polaroids/q28-0.jpg"
    ],
-   "x": -1.2884,
-   "z": 0.7446,
-   "rot": -0.1,
-   "layer": 14
+   "x": -1.3268,
+   "z": 0.482,
+   "rot": -17.5,
+   "layer": 3
   },
   {
    "frames": [
     "assets/polaroids/q29-0.jpg",
     "assets/polaroids/q29-1.jpg"
    ],
-   "x": -1.3872,
-   "z": 0.7514,
-   "rot": 9.0,
-   "layer": 7
+   "x": -1.0619,
+   "z": 0.484,
+   "rot": -18.8,
+   "layer": 26
   },
   {
    "frames": [
     "assets/polaroids/q30-0.jpg"
    ],
-   "x": -0.8641,
-   "z": 0.8567,
-   "rot": 7.2,
-   "layer": 0
+   "x": -1.0922,
+   "z": 0.233,
+   "rot": 6.9,
+   "layer": 10
   },
   {
    "frames": [
     "assets/polaroids/q31-0.jpg"
    ],
-   "x": -0.9812,
-   "z": 0.8712,
-   "rot": -14.1,
-   "layer": 23
+   "x": -1.241,
+   "z": 0.5895,
+   "rot": 3.4,
+   "layer": 8
   },
   {
    "frames": [
     "assets/polaroids/q32-0.jpg"
    ],
-   "x": -1.0774,
-   "z": 0.8607,
-   "rot": 1.9,
-   "layer": 26
+   "x": -0.8447,
+   "z": 0.6358,
+   "rot": -29.6,
+   "layer": 1
   }
  ],
  "tour": [
-  0,
-  1,
-  2,
-  3,
+  20,
+  18,
+  27,
   4,
-  5,
-  11,
-  10,
+  29,
+  1,
   9,
-  8,
-  7,
+  31,
+  16,
+  25,
   6,
+  15,
+  28,
+  17,
+  24,
+  10,
+  2,
+  14,
+  26,
+  3,
   12,
   13,
-  14,
-  15,
-  16,
-  17,
-  23,
-  22,
+  7,
+  30,
   21,
-  20,
-  19,
-  18,
-  24,
-  25,
-  26,
-  27,
-  28,
-  29,
+  23,
+  11,
+  22,
   32,
-  31,
-  30
+  0,
+  19,
+  8,
+  5
  ]
 };
