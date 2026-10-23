@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import {
   BlendFunction,
   BloomEffect,
@@ -381,84 +382,284 @@ function rod(a, b, r, material) {
   return m;
 }
 
-// Woven wire mesh for the microphone grille, used as an alpha map.
-function wireMesh() {
-  const t = canvasTexture(
-    256,
-    256,
-    (g) => {
-      g.fillStyle = "#000";
-      g.fillRect(0, 0, 256, 256);
-      g.strokeStyle = "#fff";
-      g.lineWidth = 2.4;
-      for (let k = 4; k < 256; k += 8) {
-        g.beginPath();
-        g.moveTo(k, 0);
-        g.lineTo(k, 256);
-        g.moveTo(0, k);
-        g.lineTo(256, k);
-        g.stroke();
-      }
-    },
-    false
-  );
+// --- the microphone -------------------------------------------------------------------
+// A black dynamic vocal mic in the SM58 style, with a female XLR plug, lying on the
+// table. It is built along +y in millimetres: 0 is the tail, the head is at the top
+// and the plug at negative heights.
+const MIC_HANDLE = 115; // tail to grille ring; the handle texture's v runs along it
+const MIC_HEAD = 135.5; // centre of the ball grille
+
+// A lathe from a millimetre profile whose v coordinate follows the height (v = y / vLength),
+// so a texture keeps its proportions along the body; u goes round from +z towards +x.
+function micLathe(points, segments, vLength = 1) {
+  const g = new THREE.LatheGeometry(points.map(([r, y]) => new THREE.Vector2(mm(r), mm(y))), segments);
+  const p = g.attributes.position;
+  for (let k = 0; k < p.count; k++) g.attributes.uv.setY(k, p.getY(k) / mm(vLength));
+  return g;
+}
+
+// A slightly flattened ball: an ellipse below the equator down to the rim (radius `rim`
+// at `drop` below the centre), a slightly squarer cap above it.
+function micBall(R, top, drop, rim, n) {
+  const t0 = Math.acos(rim / R);
+  const pts = [];
+  for (let k = 0; k <= 5; k++) {
+    const t = t0 * (1 - k / 5);
+    pts.push([R * Math.cos(t), (-drop * Math.sin(t)) / Math.sin(t0)]);
+  }
+  for (let k = 1; k <= n; k++) {
+    const t = ((k / n) * Math.PI) / 2;
+    pts.push([k === n ? 0 : R * Math.cos(t) ** 0.95, top * Math.sin(t) ** 0.95]);
+  }
+  return pts;
+}
+
+// Lying down, the mic rests on its grille and on the plug: tilt the axis until the
+// lowest points on either side of the balance point both touch the table.
+function micRestingPose(profile, balance) {
+  const height = (phi, [r, y]) => y * Math.sin(phi) - r * Math.cos(phi);
+  const lowest = (phi, head) =>
+    profile.filter(([, y]) => (y > balance) === head).reduce((a, p) => (height(phi, p) < height(phi, a) ? p : a));
+  let lo = 0;
+  let hi = 0.4;
+  for (let k = 0; k < 30; k++) {
+    const mid = (lo + hi) / 2;
+    if (height(mid, lowest(mid, false)) > height(mid, lowest(mid, true))) lo = mid;
+    else hi = mid;
+  }
+  // where each support touches, along the table (the radius points straight down there)
+  const touch = ([r, y]) => mm(y * Math.cos(lo) + r * Math.sin(lo));
+  return { tilt: lo, lift: mm(-height(lo, lowest(lo, true))), tail: touch(lowest(lo, false)), head: touch(lowest(lo, true)) };
+}
+
+// Fine blotchy grain round mid grey (± amount), for bump and roughness maps.
+function micGrain(seed, ru, rv, amount = 50) {
+  const r = random(seed);
+  const tile = document.createElement("canvas");
+  tile.width = tile.height = 128;
+  const tg = tile.getContext("2d");
+  const img = tg.createImageData(128, 128);
+  for (let k = 0; k < img.data.length; k += 4) {
+    img.data[k] = img.data[k + 1] = img.data[k + 2] = 128 + (r() - 0.5) * 2 * amount;
+    img.data[k + 3] = 255;
+  }
+  tg.putImageData(img, 0, 0);
+  const t = canvasTexture(256, 256, (g) => g.drawImage(tile, 0, 0, 256, 256), false);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(3.2, 1.3);
+  t.repeat.set(ru, rv);
   return t;
 }
 
-// A dynamic vocal mic in the SM58 style, lying on the table.
-function microphone() {
-  const black = new THREE.MeshStandardMaterial({ color: 0x18181a, roughness: 0.45, metalness: 0.25 });
-  const steel = new THREE.MeshStandardMaterial({ color: 0xd9d9dd, roughness: 0.25, metalness: 1 });
-  const mic = new THREE.Group();
-  mic.add(lathe([[0, 0], [0.0098, 0], [0.0108, 0.002], [0.0108, 0.013], [0.0113, 0.0136]], steel));
-  mic.add(
-    lathe(
-      [[0.0113, 0.0136], [0.0117, 0.03], [0.0129, 0.06], [0.0153, 0.088], [0.0187, 0.106], [0.0226, 0.1158], [0.0238, 0.1185], [0, 0.1185]],
-      black
-    )
-  );
-  mic.add(lathe([[0.0234, 0.118], [0.0252, 0.1188], [0.0255, 0.1226], [0.0236, 0.1234], [0, 0.1234]], steel));
-  const grille = new THREE.Mesh(
-    new THREE.SphereGeometry(0.0256, 72, 40, 0, Math.PI * 2, 0, Math.PI * 0.82),
-    new THREE.MeshStandardMaterial({
-      color: 0xd0d1d5,
-      roughness: 0.32,
-      metalness: 1,
-      alphaMap: wireMesh(),
-      alphaTest: 0.5,
-      side: THREE.DoubleSide,
-    })
-  );
-  grille.position.y = 0.1415;
-  grille.scale.y = 0.94;
-  const foam = new THREE.Mesh(new THREE.SphereGeometry(0.0236, 40, 28), new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 1 }));
-  foam.position.y = 0.1405;
-  foam.scale.y = 0.93;
-  mic.add(grille, foam);
-  // Lying down it rests on the tail and the grille, so its axis tilts up a little.
-  const tilt = Math.asin((0.0256 - 0.0108) / 0.1415);
-  mic.rotation.z = -Math.PI / 2 + tilt;
-  mic.position.y = 0.0109;
-
-  // XLR plug.
-  const plug = new THREE.Group();
-  plug.add(lathe([[0, 0], [0.0094, 0], [0.0096, 0.004], [0.0096, 0.034], [0.0078, 0.044], [0.0045, 0.05], [0.0036, 0.058], [0, 0.058]], black));
-  plug.add(lathe([[0.0097, 0.004], [0.0099, 0.0045], [0.0099, 0.008], [0.0097, 0.0085]], steel));
-  plug.rotation.z = Math.PI / 2;
-  plug.position.set(-0.0005, 0.0096, 0);
-
-  const group = new THREE.Group();
-  group.add(mic, plug);
-  return shade(group);
+// Matte black paint for the handle, with a small print along it below the head, on
+// the side facing the angle `at` round the axis (it reads from the tail to the head).
+function micPrint(at) {
+  return canvasTexture(512, 512, (g, w, h) => {
+    g.fillStyle = "#0a0a0c";
+    g.fillRect(0, 0, w, h);
+    g.translate(((((at / (Math.PI * 2)) % 1) + 1) % 1) * w, (1 - 84 / MIC_HANDLE) * h);
+    g.rotate(-Math.PI / 2);
+    g.fillStyle = "#bdbab3";
+    g.font = '600 11px "Helvetica Neue", Arial, sans-serif';
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    if ("letterSpacing" in g) g.letterSpacing = "2px";
+    g.fillText("DYNAMIC", 0, 0);
+  });
 }
 
+// The plug's latch: a raised pill-shaped push button on the shell, at angle `at`.
+function xlrLatch(at) {
+  const s = new THREE.Shape();
+  const hw = mm(2.5);
+  const hl = mm(5);
+  s.absarc(0, hl - hw, hw, 0, Math.PI, false);
+  s.absarc(0, -hl + hw, hw, Math.PI, Math.PI * 2, false);
+  const g = new THREE.ExtrudeGeometry(s, { depth: mm(0.7), bevelEnabled: true, bevelThickness: mm(0.25), bevelSize: mm(0.3), bevelSegments: 2, curveSegments: 6 });
+  g.translate(0, mm(-8.5), mm(9.4));
+  g.rotateY(at);
+  return g;
+}
+
+// Black woven wire mesh for the ball grille, drawn in the shader. The weave lies on a
+// cube projected onto the ball (equal-angle cubed sphere), so cells keep about the same
+// size everywhere and nothing pinches at the pole. Up close the holes are cut out and
+// the foam shows through; once a cell is only a few pixels wide they fill in with the
+// averaged colour, as a fine mesh looks from afar, instead of shimmering.
+function wireMesh(radius) {
+  const cells = 32; // per cube face: about 1.25 mm a cell
+  const m = new THREE.MeshStandardMaterial({ color: 0x0b0b0c, roughness: 0.36, metalness: 0, envMapIntensity: 0.6 });
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uCells = { value: cells };
+    shader.uniforms.uPitch = { value: ((Math.PI / 2) * radius) / cells };
+    const varyings = "varying vec3 vGrP;\nvarying vec3 vGrN;\nvarying vec3 vGrX;\nvarying vec3 vGrY;\nvarying vec3 vGrZ;\n";
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\n" + varyings)
+      .replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\n\tvGrP = position;\n\tvGrN = objectNormal;\n\tvGrX = normalMatrix[0];\n\tvGrY = normalMatrix[1];\n\tvGrZ = normalMatrix[2];"
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+${varyings}uniform float uCells;
+uniform float uPitch;
+const float GR_WIRE = 0.15; // wire radius, in cells
+const float GR_BEND = 0.14; // how far a wire rises and dips over and under the others
+// share of [x - w/2, x + w/2] covered by wires centred on the integers
+float grPulse(float x, float w) {
+  w = max(w, 1e-3);
+  vec2 e = vec2(x - 0.5 * w, x + 0.5 * w);
+  vec2 f = fract(e);
+  vec2 i = floor(e) * (2.0 * GR_WIRE) + min(f, vec2(GR_WIRE)) + max(f - 1.0 + GR_WIRE, 0.0);
+  return (i.y - i.x) / w;
+}`
+      )
+      .replace(
+        "#include <alphatest_fragment>",
+        `#include <alphatest_fragment>
+  // which cube face, and where on its grid (u, v in cells)
+  vec3 grD = normalize(vGrP);
+  vec3 grA = abs(grD);
+  vec3 grF = vec3(0.0, sign(grD.y), 0.0);
+  vec3 grU = vec3(1.0, 0.0, 0.0);
+  vec3 grV = vec3(0.0, 0.0, 1.0);
+  if (grA.x > grA.y && grA.x >= grA.z) { grF = vec3(sign(grD.x), 0.0, 0.0); grU = vec3(0.0, 1.0, 0.0); }
+  else if (grA.z > grA.y && grA.z > grA.x) { grF = vec3(0.0, 0.0, sign(grD.z)); grV = vec3(0.0, 1.0, 0.0); }
+  float grDF = dot(grD, grF);
+  vec2 grG = vec2(atan(dot(grD, grU) / grDF), atan(dot(grD, grV) / grDF)) * (uCells / 1.5707963);
+  // pixel footprint in cells, from the position (continuous across the cube's edges)
+  float grW = max(length(dFdx(vGrP)), length(dFdy(vGrP))) / uPitch;
+  float grCu = grPulse(grG.y, grW);
+  float grCv = grPulse(grG.x, grW);
+  float grCov = grCu + grCv - grCu * grCv;
+  float grFill = smoothstep(0.12, 0.26, grW);
+  if (grCov < 0.5 * (1.0 - grFill)) discard;
+  // the weave: each wire passes over one crossing wire and under the next
+  vec2 grI = floor(grG + 0.5);
+  vec2 grS = 1.0 - 2.0 * mod(grI, 2.0);
+  vec2 grO = (grG - grI) / GR_WIRE;
+  float grHu = grS.y * cos(PI * grG.x);
+  float grHv = -grS.x * cos(PI * grG.y);
+  bool grOnU = abs(grO.y) < 1.0 && (abs(grO.x) >= 1.0 || grHu >= grHv);
+  bool grOnV = !grOnU && abs(grO.x) < 1.0;
+  vec2 grT = vec2(0.0);
+  float grAO = 1.0;
+  if (grOnU) {
+    float o = clamp(grO.y, -0.9, 0.9);
+    grT = vec2(GR_BEND * PI * grS.y * sin(PI * grG.x), o / sqrt(1.0 - o * o));
+    grAO = (0.3 + 0.4 * (0.5 + 0.5 * grHu)) * (0.7 + 0.3 * sqrt(1.0 - o * o));
+  } else if (grOnV) {
+    float o = clamp(grO.x, -0.9, 0.9);
+    grT = vec2(o / sqrt(1.0 - o * o), -GR_BEND * PI * grS.x * sin(PI * grG.y));
+    grAO = (0.3 + 0.4 * (0.5 + 0.5 * grHv)) * (0.7 + 0.3 * sqrt(1.0 - o * o));
+  }
+  float grK = mix(grOnU || grOnV ? 1.0 : 0.0, grCov, grFill);
+  grAO = mix(grAO, 0.7, grFill) * mix(0.35, 1.0, grK); // holes stay darker while the filtered pattern still shows
+  diffuseColor.rgb = mix(vec3(0.003), diffuseColor.rgb, grK);`
+      )
+      .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n\troughnessFactor = mix(0.9, roughnessFactor, grK);")
+      .replace(
+        "#include <normal_fragment_maps>",
+        `#include <normal_fragment_maps>
+  vec3 grN = normalize(vGrN);
+  vec3 grTu = normalize(grU - dot(grU, grN) * grN);
+  vec3 grTv = normalize(grV - dot(grV, grN) * grN);
+  vec3 grB = mix(grN, normalize(grTu * grT.x + grTv * grT.y + grN), 1.0 - grFill);
+  normal = normalize(grB.x * vGrX + grB.y * vGrY + grB.z * vGrZ);`
+      )
+      .replace("#include <opaque_fragment>", "outgoingLight *= grAO;\n\t#include <opaque_fragment>");
+  };
+  return m;
+}
+
+// A soft contact shadow under the lying mic, darkest where the plug and grille touch.
+// Spots are [x, z, rx, rz, opacity] in the mic's frame, in metres.
+function micShadow(spots) {
+  const L = 0.3;
+  const W = 0.08;
+  const X0 = -0.1;
+  const tex = canvasTexture(256, 64, (g, w, h) => {
+    for (const [x, z, rx, rz, a] of spots) {
+      g.save();
+      g.translate(((x - X0) / L) * w, (z / W + 0.5) * h);
+      g.scale((rx / L) * w, (rz / W) * h);
+      const grad = g.createRadialGradient(0, 0, 0, 0, 0, 1);
+      grad.addColorStop(0, `rgba(0,0,0,${a})`);
+      grad.addColorStop(0.45, `rgba(0,0,0,${a * 0.45})`);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = grad;
+      g.fillRect(-1, -1, 2, 2);
+      g.restore();
+    }
+  });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(L, W), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(X0 + L / 2, 0.0003, 0);
+  return m;
+}
+
+// The mic itself: matte black handle, chrome ring, black ball grille over dark foam,
+// and the plug with its latch and strain relief.
+function microphone() {
+  // [radius, height] profiles, each running towards +y along its outer surface so the
+  // lathe faces point outwards; the band's lip closes the gap under the grille
+  const HANDLE = [[9.9, 7], [9.9, 0.4], [10.3, 0], [11.2, 0], [11.7, 0.5], [11.85, 1.4], [11.85, 12.4], [11.6, 12.8], [11.6, 13.3], [11.9, 13.7], [12, 24], [12.4, 42], [13.1, 60], [14.1, 74], [15.5, 85], [17.3, 94], [19.4, 101.5], [21.3, 107], [22.4, 110.5], [22.9, 112.6], [22.5, 113.2]];
+  const RING = [[22.4, 112.9], [23.25, 113.1], [23.45, 113.6], [23.45, 114.5], [23.25, 115], [22.6, 115.2]];
+  const BAND = [[23, 114.9], [23.65, 115.1], [23.85, 115.6], [23.85, 119.6], [23.55, 120.6], [22.9, 121.1], [19.5, 121]];
+  const PLUG = [[8.7, -31.6], [9.5, -31.3], [9.85, -30.6], [9.85, -22.6], [9.5, -22.1], [9.5, -21.1], [9.75, -20.6], [9.75, -0.9], [9.45, -0.4], [9.45, 6]];
+  const BOOT = [[3.45, -60.4], [4.2, -59.9], [4.75, -57.5], [5.4, -56.6], [5.2, -55.6], [5.95, -54.6], [5.75, -53.5], [6.5, -52.5], [6.25, -51.3], [6.95, -50.3], [6.75, -49.2], [7.4, -45], [8, -40], [8.45, -35], [8.6, -31.5], [8.3, -29]];
+  const front = -Math.PI / 3; // the print and the latch face up, a little towards the room
+  const paint = new THREE.MeshStandardMaterial({
+    map: micPrint(front),
+    roughness: 0.68,
+    roughnessMap: micGrain(5, 5, 6, 20),
+    bumpMap: micGrain(9, 7, 8),
+    bumpScale: 0.06,
+    envMapIntensity: 0.5,
+  });
+  const blackMetal = new THREE.MeshStandardMaterial({ color: 0x161618, roughness: 0.3, metalness: 0.85, envMapIntensity: 0.6 });
+  const chrome = new THREE.MeshStandardMaterial({ color: 0xbdbdc2, roughness: 0.26, metalness: 1, envMapIntensity: 0.9 });
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x111112, roughness: 0.62, envMapIntensity: 0.5 });
+  const foamMat = new THREE.MeshStandardMaterial({ color: 0x161616, roughness: 1, bumpMap: micGrain(13, 6, 3), bumpScale: 1, envMapIntensity: 0.5 });
+
+  const body = new THREE.Group();
+  body.add(
+    new THREE.Mesh(micLathe(HANDLE, 64, MIC_HANDLE), paint),
+    new THREE.Mesh(mergeGeometries([micLathe(RING, 64).toNonIndexed(), xlrLatch(front)]), chrome),
+    new THREE.Mesh(mergeGeometries([micLathe(BAND, 64), micLathe(PLUG, 48)]), blackMetal),
+    new THREE.Mesh(micLathe(BOOT, 40), rubber)
+  );
+  const ball = micBall(25.6, 24.9, 14.4, 22, 26);
+  const grille = new THREE.Mesh(micLathe(ball, 72), wireMesh(mm(25.6)));
+  const foam = new THREE.Mesh(micLathe(micBall(23.9, 23.2, 14.8, 20.4, 12), 40), foamMat);
+  grille.position.y = foam.position.y = mm(MIC_HEAD);
+  body.add(grille, foam);
+
+  const pose = micRestingPose([...HANDLE, ...RING, ...BAND, ...PLUG, ...BOOT, ...ball.map(([r, y]) => [r, y + MIC_HEAD])], 70);
+  body.rotation.z = -Math.PI / 2 + pose.tilt;
+  body.position.y = pose.lift;
+
+  const group = new THREE.Group();
+  group.add(body);
+  shade(group);
+  grille.castShadow = false; // the foam inside casts the head's shadow
+  group.add(
+    micShadow([
+      [(pose.tail + pose.head) / 2, 0, (pose.head - pose.tail) / 2 + 0.02, 0.017, 0.32],
+      [pose.head, 0, 0.026, 0.021, 0.55],
+      [pose.tail, 0, 0.013, 0.01, 0.5],
+    ])
+  );
+  return group;
+}
+
+// The mic's cable: points are [x, z] on the table, or [x, z, y] where it is lifted.
 function cable(points) {
-  const curve = new THREE.CatmullRomCurve3(points.map(([x, z]) => new THREE.Vector3(x, 0.0034, z)));
+  const curve = new THREE.CatmullRomCurve3(points.map(([x, z, y = 0.0034]) => new THREE.Vector3(x, y, z)));
   const m = new THREE.Mesh(
-    new THREE.TubeGeometry(curve, 240, 0.0034, 12, false),
-    new THREE.MeshStandardMaterial({ color: 0x111112, roughness: 0.55, metalness: 0.1 })
+    new THREE.TubeGeometry(curve, 240, 0.0034, 10, false),
+    new THREE.MeshStandardMaterial({ color: 0x111112, roughness: 0.62, envMapIntensity: 0.5 })
   );
   return shade(m);
 }
@@ -1149,7 +1350,7 @@ function place(obj, x, z, yawDeg) {
 // the two rows, so every move passes over something.
 place(guitar(), -1.25, 0.0, -3);
 place(microphone(), 0.6, -0.025, 8);
-scene.add(cable([[0.545, -0.017], [0.48, 0.0], [0.4, 0.04], [0.33, 0.07], [0.3, 0.15], [0.28, 0.25], [0.31, 0.34], [0.29, 0.45], [0.33, 0.6], [0.3, 0.85]]));
+scene.add(cable([[0.5487, -0.0178, 0.0078], [0.5405, -0.0166, 0.007], [0.527, -0.0147, 0.0052], [0.505, -0.0105], [0.48, 0.0], [0.4, 0.04], [0.33, 0.07], [0.3, 0.15], [0.28, 0.25], [0.31, 0.34], [0.29, 0.45], [0.33, 0.6], [0.3, 0.85]]));
 place(ashtray(), 0.47, -0.27, 0);
 place(openGrinder(), -0.045, -0.215, 0);
 place(grinderLid(), -0.055, -0.33, 40);
