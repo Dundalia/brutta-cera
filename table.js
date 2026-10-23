@@ -1176,9 +1176,6 @@ const flameLight = candle();
 place(flameLight.group, 0.12, -0.005, 0);
 place(pick(0xe0702a), 0.24, 0.42, 28);
 place(pick(0x1d1d1f), -0.55, 0.055, -50);
-const loose = cigarette(0.063, false);
-loose.position.y = 0.0039;
-place(loose, -0.575, -0.36, 100);
 
 // Photographed props from Poly Haven (CC0), loaded at their real size.
 function loadModel(url, setup) {
@@ -1189,6 +1186,37 @@ function loadModel(url, setup) {
     const box = new THREE.Box3().setFromObject(root);
     root.position.y -= box.min.y;
     scene.add(root);
+    renderer.shadowMap.needsUpdate = true;
+  });
+}
+
+// A few dandelions picked and left on the table between sheets 0 and 1: three stems
+// with their flower heads, cut out of Poly Haven's dandelion_01 scan (CC0) and laid
+// on their side. The GLB only carries the geometry; the scan's textures load here.
+{
+  const tex = (name, srgb) => {
+    const t = textures.load(`assets/models/flowers/dandelion_01_${name}_1k.jpg`);
+    t.flipY = false; // glTF UVs
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = aniso;
+    return t;
+  };
+  const arm = tex("arm");
+  const petals = new THREE.MeshStandardMaterial({ map: tex("diff", true), normalMap: tex("nor_gl"), roughnessMap: arm, aoMap: arm, side: THREE.DoubleSide });
+  // stem base x, z and the direction the stem points, in degrees
+  const lay = [[-0.585, -0.3, 96], [-0.548, -0.27, 78], [-0.61, -0.235, 112]];
+  gltf.load("assets/models/flowers/dandelions.glb", (g) => {
+    const stems = [];
+    g.scene.traverse((o) => o.isMesh && stems.push(o));
+    stems.slice(0, lay.length).forEach((o, k) => {
+      const [x, z, deg] = lay[k];
+      if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals(); // the GLB has none
+      const flower = new THREE.Mesh(o.geometry, petals);
+      flower.rotation.z = -Math.PI / 2; // lying down: the stem runs along +x
+      flower.updateMatrixWorld(true);
+      flower.position.y = -new THREE.Box3().setFromObject(flower).min.y + 0.0004;
+      place(shade(flower), x, z, deg);
+    });
     renderer.shadowMap.needsUpdate = true;
   });
 }
