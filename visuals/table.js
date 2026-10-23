@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 
-const { SETLIST, COVER, slides, setShown, attachTable, loading, finishLoading } = window.visuals;
+const { SETLIST, COVER, slides, setShown, attachTable, loading, finishLoading, getSpeed, POLAROID, polaroidPose } = window.visuals;
 
 // Where each sheet lies on the table: x, z in metres, rotation in degrees.
 // About 20 cm apart, so the props in between show up on every move.
@@ -17,6 +17,7 @@ const LAYOUT = [
   [0.56, 0.23, -8],
   [0.04, 0.27, 4],
   [-0.5, 0.24, -12],
+  [-1.02, 0.36, 3], // 7-quebec: the patch where the Polaroids land
 ];
 const SHEET_W = 0.3;
 const SHEET_H = 0.225;
@@ -178,7 +179,80 @@ function sheetMaterial(poster, u) {
   return m;
 }
 
+// "7-quebec": a patch of table where Polaroids are thrown in one by one (the
+// choreography, POLAROID and polaroidPose, lives in index.html for both players).
+function polaroidSpot(i) {
+  const [x, z, deg] = LAYOUT[i];
+  const rot = (deg * Math.PI) / 180;
+  const focus = { value: 0 };
+  const edge = new THREE.MeshStandardMaterial({ color: 0xf1eee6, roughness: 0.8 });
+  const patch = new THREE.Group();
+  patch.position.set(x, 0, z);
+  patch.rotation.y = rot;
+  scene.add(patch);
+  const cards = slides[i].polaroids.map((url) => {
+    const tex = textures.load(url);
+    tex.anisotropy = aniso;
+    const top = sheetMaterial(tex, { uVideo: { value: tex }, uVideoMix: { value: 0 }, uFocus: focus });
+    const card = new THREE.Mesh(new THREE.BoxGeometry(POLAROID.W, 0.0011, POLAROID.H), [edge, edge, top, edge, edge, edge]);
+    // its shadow is a soft decal that spreads and fades as the card is higher up
+    const shadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(POLAROID.W / 0.7, POLAROID.H / 0.7),
+      new THREE.MeshBasicMaterial({ map: softShadow, transparent: true, depthWrite: false })
+    );
+    patch.add(card, shadow);
+    return { card, shadow, tex };
+  });
+  return {
+    i,
+    w: POLAROID.AREA_W,
+    h: POLAROID.AREA_H,
+    x,
+    z,
+    rot,
+    u: { uVideo: { value: null }, uVideoMix: { value: 0 }, uFocus: focus },
+    poster: null,
+    videoTexture: null,
+    live: false,
+    fade: 0,
+    polaroids: cards,
+    time: POLAROID.pileAt,
+  };
+}
+
+// Lay the Polaroids out for the current time of their loop. While the camera is
+// elsewhere the loop runs on to the full pile and rests there.
+let polaroidClock = 0;
+function updatePolaroids(now) {
+  const dt = polaroidClock ? Math.min(0.1, (now - polaroidClock) / 1000) : 0;
+  polaroidClock = now;
+  const P = POLAROID;
+  for (const s of sheets) {
+    if (!s.polaroids) continue;
+    if (landed === s.i) {
+      s.time = (s.time + dt * getSpeed()) % P.period;
+    } else if (s.time !== P.pileAt) {
+      const next = s.time + dt * getSpeed() * 2;
+      const passes = (s.time < P.pileAt && next >= P.pileAt) || next - P.period >= P.pileAt;
+      s.time = passes ? P.pileAt : next % P.period;
+    }
+    s.polaroids.forEach((c, k) => {
+      const pose = polaroidPose(k, s.time);
+      c.card.visible = c.shadow.visible = !!pose;
+      if (!pose) return;
+      const turn = (-pose.rot * Math.PI) / 180;
+      c.card.position.set(pose.x, 0.0014 + k * 0.0006 + pose.lift, pose.z);
+      c.card.rotation.y = turn;
+      c.shadow.position.set(pose.x + 0.006 + pose.lift * 0.15, 0.0003, pose.z + 0.01 + pose.lift * 0.2);
+      c.shadow.rotation.set(-Math.PI / 2, 0, turn);
+      c.shadow.scale.setScalar(1 + pose.lift * 1.6);
+      c.shadow.material.opacity = Math.max(0.08, 0.62 - pose.lift * 2.4);
+    });
+  }
+}
+
 const sheets = SETLIST.map((name, i) => {
+  if (slides[i].polaroids) return polaroidSpot(i);
   const isCover = name === COVER;
   const w = isCover ? COVER_SIZE : SHEET_W;
   const h = isCover ? COVER_SIZE : SHEET_H;
@@ -1119,7 +1193,7 @@ function depart() {
   if (landed === -1) return;
   const s = sheets[landed];
   landed = -1;
-  if (!s.videoTexture) hideCover();
+  if (!s.videoTexture && !s.polaroids) hideCover();
 }
 
 function land(i) {
@@ -1139,6 +1213,9 @@ function land(i) {
     } else {
       tween(s.u.uVideoMix, "value", 1, 300);
     }
+  } else if (s.polaroids) {
+    // the pile on the table is swept away first, then the loop starts
+    s.time = POLAROID.sweepAt - 0.3;
   } else {
     showCover();
     slide.start();
@@ -1219,6 +1296,7 @@ function adaptResolution(now) {
 function frame(now) {
   adaptResolution(now);
   flicker(now / 1000);
+  updatePolaroids(now);
   if (flight) {
     const t = Math.min(1, (now - flight.t0) / flight.ms);
     const e = ease(t);
@@ -1298,7 +1376,10 @@ manager.onLoad = () => {
       for (const key of ["map", "normalMap", "roughnessMap", "aoMap", "alphaMap", "emissiveMap"]) if (m[key]) renderer.initTexture(m[key]);
     }
   });
-  for (const s of sheets) renderer.initTexture(s.poster);
+  for (const s of sheets) {
+    if (s.poster) renderer.initTexture(s.poster);
+    if (s.polaroids) s.polaroids.forEach((c) => renderer.initTexture(c.tex));
+  }
   const go = () => {
     if (ready) return;
     ready = true;

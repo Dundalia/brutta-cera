@@ -55,6 +55,44 @@
     height: auto;
     overflow: visible;
   }
+  /* "7-quebec" in the plain player: Polaroids dropped on the wooden table */
+  #polaroids {
+    display: none;
+    background: #2a180d url("assets/table/wood_diff_2k.jpg") center / 60vmax;
+    overflow: hidden;
+  }
+  #polaroids.active, #polaroids.under {
+    display: block;
+  }
+  #polaroids::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 80% 75% at 50% 46%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.55) 100%);
+  }
+  .pol-stage {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: min(96vw, 128vh);
+    aspect-ratio: 4 / 3;
+    transform: translate(-50%, -50%);
+  }
+  .pol {
+    position: absolute;
+    width: 22%;
+    aspect-ratio: 88 / 107;
+    visibility: hidden;
+    will-change: transform;
+  }
+  .pol img {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  body.table #polaroids {
+    display: none !important;
+  }
   /* table mode: the WebGL scene replaces the plain player */
   #scene, #vignette {
     position: fixed;
@@ -254,7 +292,8 @@
 </script>
 <script>
   // Ordered setlist: index = key to press. "0-copertina" is the animated cover above,
-  // the others are files in ../videos-out/. Shown as "number · title".
+  // "7-quebec" is a set of Polaroids, the others are files in ../videos-out/.
+  // Shown as "number · title".
   const SETLIST = [
     "0-copertina",
     "1-brutta cera",
@@ -263,6 +302,7 @@
     "4-la canzone di elio",
     "5-un ottimo padre",
     "6-andarcene",
+    "7-quebec",
   ];
   const COVER = "0-copertina";
   const LABEL_MS = 3000;
@@ -349,7 +389,123 @@
     return slide;
   }
 
-  const slides = SETLIST.map((name) => (name === COVER ? coverSlide() : videoSlide(name)));
+  // "7-quebec": instead of a video, Polaroids are thrown onto the table one by one,
+  // stay a moment, get swept away, and it starts again. Shared with table.js.
+  const POLAROID_SONGS = {
+    "7-quebec": [1, 2, 3, 4, 5, 6].map((k) => "assets/polaroids/quebec-" + k + ".jpg"),
+  };
+  const POLAROID = {
+    W: 0.088, // card size in metres
+    H: 0.107,
+    AREA_W: 0.4, // the 4:3 patch of table they land on
+    AREA_H: 0.3,
+    // where each one lands: x, z from the patch centre (m), turn (deg)
+    spots: [[-0.1, -0.045, -14], [0.085, -0.055, 11], [-0.02, 0.03, -4], [0.11, 0.05, 19], [-0.115, 0.06, 8], [0.02, -0.01, -17]],
+    // where each one is thrown in from, relative to where it lands
+    from: [[-0.2, -0.22, -50], [0.24, -0.2, 45], [-0.24, 0.18, -35], [0.22, 0.2, 60], [-0.26, 0.05, 40], [0.05, -0.26, -55]],
+    first: 0.6,
+    every: 1.8,
+    fall: 0.95,
+    hold: 3.2,
+    sweep: 0.9,
+  };
+  POLAROID.sweepAt = POLAROID.first + (POLAROID.spots.length - 1) * POLAROID.every + POLAROID.fall + POLAROID.hold;
+  POLAROID.period = POLAROID.sweepAt + POLAROID.sweep + 0.07 * POLAROID.spots.length + 0.5;
+  POLAROID.pileAt = POLAROID.sweepAt - 0.4; // all of them down, nothing swept yet
+
+  // Pose of Polaroid i at time t of the loop, or null while it is off the table.
+  function polaroidPose(i, t) {
+    const P = POLAROID;
+    const [x1, z1, r1] = P.spots[i];
+    const [fx, fz, fr] = P.from[i];
+    const t0 = P.first + i * P.every;
+    if (t < t0) return null;
+    let x = x1;
+    let z = z1;
+    let rot = r1;
+    let lift = 0;
+    if (t < t0 + P.fall) {
+      const p = (t - t0) / P.fall;
+      const e = 1 - Math.pow(1 - p, 3);
+      x += fx * (1 - e);
+      z += fz * (1 - e);
+      rot += fr * (1 - e);
+      lift = 0.22 * (1 - p) * (1 - p);
+    }
+    const ts = P.sweepAt + i * 0.07;
+    if (t > ts) {
+      const q = Math.min(1, (t - ts) / P.sweep);
+      if (q >= 1) return null;
+      const e = q * q * q;
+      x += 0.55 * e;
+      z += 0.08 * e;
+      rot += 25 * e;
+      lift += 0.02 * e;
+    }
+    return { x, z, rot, lift };
+  }
+
+  // Plain-player version: the same choreography with DOM elements over a wood photo.
+  function polaroidSlide(name) {
+    const el = document.createElement("div");
+    el.className = "slide";
+    el.id = "polaroids";
+    const stage = document.createElement("div");
+    stage.className = "pol-stage";
+    el.appendChild(stage);
+    const cards = POLAROID_SONGS[name].map((src) => {
+      const card = document.createElement("div");
+      card.className = "pol";
+      const img = new Image();
+      img.src = src;
+      card.appendChild(img);
+      stage.appendChild(card);
+      return card;
+    });
+    document.body.appendChild(el);
+    let t = 0;
+    let last = 0;
+    let loop = 0;
+    function tick(now) {
+      t = (t + Math.min(0.1, (now - last) / 1000) * speed) % POLAROID.period;
+      last = now;
+      cards.forEach((card, i) => {
+        const pose = polaroidPose(i, t);
+        card.style.visibility = pose ? "visible" : "hidden";
+        if (!pose) return;
+        const s = 1 + pose.lift * 2.4;
+        card.style.left = 50 + (pose.x / POLAROID.AREA_W) * 100 - 11 + "%";
+        card.style.top = 50 + (pose.z / POLAROID.AREA_H) * 100 - (POLAROID.H / POLAROID.AREA_H) * 50 + "%";
+        card.style.zIndex = String(i + 1);
+        card.style.transform = `rotate(${pose.rot}deg) scale(${s})`;
+        card.style.boxShadow = `${2 + pose.lift * 90}px ${3 + pose.lift * 130}px ${5 + pose.lift * 180}px rgba(0,0,0,${0.5 - pose.lift})`;
+      });
+      loop = requestAnimationFrame(tick);
+    }
+    return {
+      el,
+      polaroids: POLAROID_SONGS[name],
+      warm() {},
+      start() {
+        cancelAnimationFrame(loop);
+        t = 0;
+        last = performance.now();
+        loop = requestAnimationFrame(tick);
+      },
+      stop() {
+        cancelAnimationFrame(loop);
+      },
+      resume() {},
+      setSpeed() {},
+      onPainted(fn) {
+        requestAnimationFrame(() => requestAnimationFrame(fn));
+      },
+    };
+  }
+
+  const slides = SETLIST.map((name) =>
+    name === COVER ? coverSlide() : POLAROID_SONGS[name] ? polaroidSlide(name) : videoSlide(name)
+  );
 
   // Flat mode: put `next` on top and start it. The previous slide stays visible
   // underneath until `next` has actually painted a frame, so a cut never flashes black.
@@ -603,6 +759,9 @@
       shown = slide;
     },
     loading: (p) => loading.progress(p),
+    getSpeed: () => speed,
+    POLAROID,
+    polaroidPose,
     finishLoading: (fn) => loading.finish(fn),
     attachTable(t) {
       table = t;
