@@ -317,9 +317,16 @@ const sheets = SETLIST.map((name, i) => {
   const svg = document.querySelector("#cover .qr svg");
   if (!card || !svg) return;
   const k = 1.6; // the overlay box is 1000px wide, the cover texture 1600px
+  // as laid out by "body.table #cover": composition at 12% instead of the printed 25%,
+  // a 300px QR, a 12px gap and an 18px label, 3.5% from the bottom
+  const lift = 0.13 * 1600;
+  const qrSize = 300;
+  const labelSize = 18;
+  const labelBottom = 1000 - 35;
+  const qrTop = labelBottom - labelSize - 12 - qrSize;
   const copy = svg.cloneNode(true);
-  copy.setAttribute("width", String(185 * k));
-  copy.setAttribute("height", String(185 * k));
+  copy.setAttribute("width", String(qrSize * k));
+  copy.setAttribute("height", String(qrSize * k));
   const base = new Image();
   base.src = "public/cover.png";
   const qr = new Image();
@@ -329,15 +336,16 @@ const sheets = SETLIST.map((name, i) => {
       const c = document.createElement("canvas");
       c.width = c.height = 1600;
       const g = c.getContext("2d");
-      g.drawImage(base, 0, 0, 1600, 1600);
-      // as laid out by "body.table #cover .qr": 185px QR, 9px gap, 15px label, 3% from the bottom
-      g.drawImage(qr, (500 - 92.5) * k, 761 * k, 185 * k, 185 * k);
+      g.fillStyle = "#f5f1e3";
+      g.fillRect(0, 0, 1600, 1600);
+      g.drawImage(base, 0, -lift, 1600, 1600);
+      g.drawImage(qr, (500 - qrSize / 2) * k, qrTop * k, qrSize * k, qrSize * k);
       g.fillStyle = "#1b1107";
-      g.font = `600 ${15 * k}px -apple-system, "Helvetica Neue", Arial, sans-serif`;
+      g.font = `600 ${labelSize * k}px -apple-system, "Helvetica Neue", Arial, sans-serif`;
       g.textAlign = "center";
       g.textBaseline = "bottom";
-      if ("letterSpacing" in g) g.letterSpacing = `${15 * 0.14 * k}px`;
-      g.fillText("ascolta su spotify", 800, 970 * k);
+      if ("letterSpacing" in g) g.letterSpacing = `${labelSize * 0.14 * k}px`;
+      g.fillText("ascolta su spotify", 800, labelBottom * k);
       const tex = new THREE.CanvasTexture(c);
       tex.anisotropy = aniso;
       card.mesh.material.map = tex;
@@ -1184,10 +1192,6 @@ function loadModel(url, setup) {
     renderer.shadowMap.needsUpdate = true;
   });
 }
-loadModel("assets/models/vintage_lighter/vintage_lighter_1k.gltf", (root) => {
-  root.rotation.y = (35 * Math.PI) / 180;
-  root.position.set(-0.56, 0, -0.2);
-});
 
 // The candle flame flickers; its light breathes with it.
 function flicker(t) {
@@ -1466,17 +1470,28 @@ let ready = false;
 const whenReady = [];
 // Once everything is loaded, compile every shader and upload every texture before
 // the first frame that needs them, so the fly-in never stutters.
-manager.onLoad = () => {
+// Textures go to the GPU one per frame, so the loading screen never freezes.
+let preparing = false;
+manager.onLoad = async () => {
+  if (preparing) return;
+  preparing = true;
   renderer.shadowMap.needsUpdate = true;
+  const all = new Set();
   scene.traverse((o) => {
     if (!o.material) return;
     for (const m of [].concat(o.material)) {
-      for (const key of ["map", "normalMap", "roughnessMap", "aoMap", "alphaMap", "emissiveMap"]) if (m[key]) renderer.initTexture(m[key]);
+      for (const key of ["map", "normalMap", "roughnessMap", "aoMap", "alphaMap", "emissiveMap"]) if (m[key]) all.add(m[key]);
     }
   });
   for (const s of sheets) {
-    if (s.poster) renderer.initTexture(s.poster);
-    if (s.spread) s.spread.forEach((c) => c.frames.forEach((t) => renderer.initTexture(t)));
+    if (s.poster) all.add(s.poster);
+    if (s.spread) s.spread.forEach((c) => c.frames.forEach((t) => all.add(t)));
+  }
+  let done = 0;
+  for (const tex of all) {
+    renderer.initTexture(tex);
+    loading(0.82 + (0.07 * ++done) / all.size);
+    await new Promise((r) => requestAnimationFrame(r));
   }
   const go = () => {
     if (ready) return;

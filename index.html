@@ -53,7 +53,7 @@
     gap: 3vh;
   }
   #cover > svg {
-    width: min(90vw, calc(62vh * 2.03));
+    width: min(90vw, calc(50vh * 2.03));
     height: auto;
     overflow: visible;
   }
@@ -161,19 +161,20 @@
   body.table #cover > svg {
     position: absolute;
     left: 3.75%;
-    top: 25%;
+    top: 12%;
     width: 91.25%;
   }
   /* While the table loads, the cover is the loading screen: its two blobs fill up
      with the progress instead of over time. */
   html body #cover.loading {
-    position: fixed;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
     transform: none !important;
     opacity: 1;
     z-index: 4;
@@ -206,11 +207,11 @@
   }
   .qr svg {
     display: block;
-    width: 21vh;
-    height: 21vh;
+    width: 31vh;
+    height: 31vh;
   }
   .qr span {
-    font: 600 1.7vh/1 -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font: 600 2vh/1 -apple-system, "Helvetica Neue", Arial, sans-serif;
     letter-spacing: 0.14em;
   }
   #cover.loading .qr {
@@ -220,16 +221,16 @@
   body.table #cover .qr {
     position: absolute;
     left: 50%;
-    bottom: 3%;
+    bottom: 3.5%;
     transform: translateX(-50%);
-    gap: 9px;
+    gap: 12px;
   }
   body.table #cover .qr svg {
-    width: 185px;
-    height: 185px;
+    width: 300px;
+    height: 300px;
   }
   body.table #cover .qr span {
-    font-size: 15px;
+    font-size: 18px;
   }
   #label {
     position: absolute;
