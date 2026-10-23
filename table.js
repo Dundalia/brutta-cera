@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import {
   BlendFunction,
   BloomEffect,
@@ -656,33 +657,296 @@ function grinderLid() {
 }
 
 // --- a PS3 DualShock 3, lying face up -------------------------------------------------------
-// The shell is a smooth mesh modelled offline (assets/models/ds3) together with a
-// height map of its top, used to sit every button and recess on the curved plastic.
-function decal(size, draw) {
-  return canvasTexture(256, 256, (c) => {
-    c.clearRect(0, 0, 256, 256);
-    draw(c);
+// The shell is a smooth mesh modelled offline (tools/make_ds3.py -> assets/models/ds3) with a
+// height map of its top, used to sit every button and print on the curved plastic. The parts
+// that share a material are merged, so the whole pad costs six draw calls.
+
+// Tileable blurred noise in 0..1, for the plastic's micro texture and its smudges.
+function tileNoise(size, blur, seed) {
+  const r = random(seed);
+  const h = Float32Array.from({ length: size * size }, () => r());
+  const tmp = new Float32Array(h.length);
+  const wrap = (v) => (v + size) % size;
+  for (let pass = 0; pass < 3; pass++) {
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        let s = 0;
+        for (let k = -blur; k <= blur; k++) s += h[y * size + wrap(x + k)];
+        tmp[y * size + x] = s;
+      }
+    for (let y = 0; y < size; y++)
+      for (let x = 0; x < size; x++) {
+        let s = 0;
+        for (let k = -blur; k <= blur; k++) s += tmp[wrap(y + k) * size + x];
+        h[y * size + x] = s;
+      }
+  }
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of h) {
+    lo = Math.min(lo, v);
+    hi = Math.max(hi, v);
+  }
+  return h.map((v) => (v - lo) / (hi - lo));
+}
+
+// A tiling texture filled pixel by pixel: fill(x, y) returns [r, g, b] in 0..255.
+function pixelTexture(w, h, fill) {
+  const t = canvasTexture(
+    w,
+    h,
+    (c) => {
+      const img = c.createImageData(w, h);
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+          const o = (y * w + x) * 4;
+          [img.data[o], img.data[o + 1], img.data[o + 2]] = fill(x, y);
+          img.data[o + 3] = 255;
+        }
+      c.putImageData(img, 0, 0);
+    },
+    false
+  );
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+// Normal map of a height field given as h(x, y), slopes scaled by strength.
+function normalTexture(w, h, height, strength) {
+  return pixelTexture(w, h, (x, y) => {
+    const nx = (height(x - 1, y) - height(x + 1, y)) * strength;
+    const ny = (height(x, y + 1) - height(x, y - 1)) * strength;
+    const l = Math.hypot(nx, ny, 1);
+    return [128 + (127 * nx) / l, 128 + (127 * ny) / l, 128 + 127 / l];
   });
 }
-function symbolDecal(color, path) {
-  return decal(256, (c) => {
-    c.strokeStyle = color;
-    c.lineWidth = 20;
+
+// The cells of the two decal atlases, in pixels of a 512 x 512 canvas.
+const PAD_PRINTS = {
+  select: [0, 0, 256, 64],
+  start: [256, 0, 256, 64],
+  name: [0, 64, 512, 64],
+  leds: [0, 128, 512, 128],
+  logo: [0, 256, 256, 256],
+};
+const PAD_LEDS = [64, 192, 320, 448]; // centres of the four LED windows in the "leds" cell
+const PAD_SYMBOLS = [
+  // triangle, circle, cross, square: colour, offset from the cluster centre (mm), outline
+  ["#3ad7a5", 0, -12, (c) => { c.moveTo(128, 54); c.lineTo(194, 168); c.lineTo(62, 168); c.closePath(); }],
+  ["#ff4f55", 12, 0, (c) => c.arc(128, 128, 61, 0, Math.PI * 2)],
+  ["#6f9dff", 0, 12, (c) => { c.moveTo(78, 78); c.lineTo(178, 178); c.moveTo(178, 78); c.lineTo(78, 178); }],
+  ["#f585d4", -12, 0, (c) => c.rect(80, 80, 96, 96)],
+];
+
+function padPrintTextures() {
+  const prints = canvasTexture(512, 512, (c) => {
+    c.textAlign = "center";
+    c.textBaseline = "middle";
+    c.fillStyle = "rgba(228,228,232,0.95)";
+    c.font = "600 36px Helvetica, Arial, sans-serif";
+    c.fillText("SELECT", 128, 32);
+    c.fillText("START", 384, 32);
+    // on the back edge, over the USB port
+    c.font = "700 30px Helvetica, Arial, sans-serif";
+    c.letterSpacing = "4px";
+    c.fillText("DUALSHOCK 3", 256, 82);
+    c.font = "600 19px Helvetica, Arial, sans-serif";
+    c.letterSpacing = "6px";
+    c.fillStyle = "rgba(200,200,206,0.9)";
+    c.fillText("SIXAXIS", 256, 113);
+    c.letterSpacing = "0px";
+    // the four player LEDs on the back edge, numbered on the top; the first one lit
+    PAD_LEDS.forEach((x, k) => {
+      const y = 128 + 38;
+      if (k === 0) {
+        const halo = c.createRadialGradient(x, y, 6, x, y, 36);
+        halo.addColorStop(0, "rgba(255,70,40,0.5)");
+        halo.addColorStop(1, "rgba(255,40,20,0)");
+        c.fillStyle = halo;
+        c.fillRect(x - 38, y - 38, 76, 76);
+      }
+      c.fillStyle = k === 0 ? "#ff5236" : "#2b0d0a";
+      c.strokeStyle = k === 0 ? "#ffb39f" : "rgba(120,60,55,0.7)";
+      c.lineWidth = 3;
+      c.lineJoin = "round";
+      c.fillRect(x - 26, y - 11, 52, 22);
+      c.strokeRect(x - 26, y - 11, 52, 22);
+      c.fillStyle = "rgba(225,225,230,0.95)";
+      c.font = "600 40px Helvetica, Arial, sans-serif";
+      c.fillText(String(k + 1), x, 128 + 96);
+    });
+    // the PlayStation logo: an upright P standing on an S that lies flat
+    c.save();
+    c.translate(0, 256);
+    c.fillStyle = "#b9bac0";
+    c.font = "900 136px 'Arial Black', Arial, sans-serif";
+    c.textBaseline = "alphabetic";
+    c.save();
+    c.translate(108, 176);
+    c.transform(0.78, 0, 0, 1.02, 0, 0);
+    c.fillText("P", 0, 0);
+    c.restore();
+    // the S lies in front of the P's foot, edged in black where they cross
+    c.save();
+    c.translate(122, 200);
+    c.transform(1.05, 0, -0.8, 0.38, 0, 0);
+    c.strokeStyle = "#000";
+    c.lineWidth = 14;
     c.lineJoin = "round";
-    c.lineCap = "round";
-    c.beginPath();
-    path(c);
-    c.stroke();
+    c.globalCompositeOperation = "destination-out";
+    c.strokeText("S", 0, 0);
+    c.globalCompositeOperation = "source-over";
+    c.fillText("S", 0, 0);
+    c.restore();
+    c.restore();
   });
+  // only the lit LED glows
+  const glow = canvasTexture(128, 128, (c) => {
+    c.fillStyle = "#000";
+    c.fillRect(0, 0, 128, 128);
+    c.scale(0.25, 0.25);
+    const x = PAD_LEDS[0];
+    const y = 128 + 38;
+    const g = c.createRadialGradient(x, y, 4, x, y, 34);
+    g.addColorStop(0, "#ff4a2a");
+    g.addColorStop(0.4, "#a01806");
+    g.addColorStop(1, "#000");
+    c.fillStyle = g;
+    c.fillRect(x - 36, y - 36, 72, 72);
+    c.fillStyle = "#ff6a48";
+    c.fillRect(x - 24, y - 9, 48, 18);
+  });
+  // the face buttons: smoky dark caps with their coloured symbols, one per quarter
+  const symbols = canvasTexture(512, 512, (c) => {
+    PAD_SYMBOLS.forEach(([color, , , path], k) => {
+      c.save();
+      c.translate((k % 2) * 256, Math.floor(k / 2) * 256);
+      const g = c.createRadialGradient(118, 112, 10, 128, 128, 132);
+      g.addColorStop(0, "#0d0d10");
+      g.addColorStop(0.7, "#141418");
+      g.addColorStop(1, "#202026");
+      c.fillStyle = g;
+      c.fillRect(0, 0, 256, 256);
+      c.strokeStyle = color;
+      c.lineWidth = 16;
+      c.lineJoin = "round";
+      c.lineCap = "round";
+      c.shadowColor = color;
+      c.shadowBlur = 5;
+      c.beginPath();
+      path(c);
+      c.stroke();
+      c.restore();
+    });
+  });
+  return { prints, glow, symbols };
+}
+
+// Remap a geometry's 0..1 uvs into a cell [x, y, w, h] of a 512 px atlas.
+function atlasCell(geo, [x, y, w, h]) {
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, (x + uv.getX(i) * w) / 512, 1 - (y + h - uv.getY(i) * h) / 512);
+  return geo;
+}
+
+// Keep position, normal and uv only, unindexed, so parts can be merged.
+function mergeable(geo) {
+  const g = geo.index ? geo.toNonIndexed() : geo.clone();
+  for (const name of Object.keys(g.attributes)) if (name !== "position" && name !== "normal" && name !== "uv") g.deleteAttribute(name);
+  g.clearGroups();
+  return g;
+}
+
+// Dims the room's reflections on a material by k (three ignores envMapIntensity under
+// scene.environment) and applies any further shader edit.
+function padShader(material, name, k, edit = () => {}) {
+  material.onBeforeCompile = (shader) => {
+    edit(shader);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <lights_fragment_maps>",
+      `#include <lights_fragment_maps>
+      #if defined( RE_IndirectSpecular ) && defined( USE_ENVMAP )
+        iblIrradiance *= ${k.toFixed(3)};
+        radiance *= ${k.toFixed(3)};
+        clearcoatRadiance *= ${k.toFixed(3)};
+      #endif`
+    );
+  };
+  material.customProgramCacheKey = () => `ds3-${name}-${k}`;
+  return material;
 }
 
 function ps3Controller() {
   const group = new THREE.Group();
-  const shellMat = new THREE.MeshPhysicalMaterial({ color: 0x070708, roughness: 0.2, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.12 });
-  const keyMat = new THREE.MeshPhysicalMaterial({ color: 0x0e0e11, roughness: 0.16, clearcoat: 1, clearcoatRoughness: 0.08 });
-  const rubber = new THREE.MeshStandardMaterial({ color: 0x1a1a1c, roughness: 0.82 });
-  const matte = new THREE.MeshStandardMaterial({ color: 0x030303, roughness: 0.7 });
-  const printMat = (tex) => new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false });
+
+  // Glossy black ABS: a soft sheen under a clear coat with a faint orange peel and a few smudges.
+  const peelHeight = tileNoise(256, 5, 31);
+  const peel = normalTexture(256, 256, (x, y) => peelHeight[((y + 256) % 256) * 256 + ((x + 256) % 256)], 5);
+  const smudgeHeight = tileNoise(128, 9, 77);
+  const smudge = pixelTexture(128, 128, (x, y) => {
+    const v = 255 * (0.42 + 0.58 * smudgeHeight[y * 128 + x] ** 1.6);
+    return [v, v, v];
+  });
+  smudge.repeat.set(0.45, 0.45);
+  const shellMat = new THREE.MeshPhysicalMaterial({
+    color: 0x040405,
+    roughness: 0.45,
+    specularIntensity: 0.3,
+    clearcoat: 1,
+    clearcoatRoughness: 0.1,
+    clearcoatRoughnessMap: smudge,
+    clearcoatNormalMap: peel,
+    clearcoatNormalScale: new THREE.Vector2(0.03, 0.03),
+  });
+  // The parting line between the two halves, from a height stored with the shell's vertices;
+  // the micro texture fades out on steep sides, where its flat uvs would streak.
+  padShader(shellMat, "shell", 0.6, (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute vec4 seam;\nvarying float vSeam;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvSeam = (seam.r - 0.5) * 12.0;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying float vSeam;")
+      .replace(
+        "#include <clearcoat_normal_fragment_maps>",
+        `#include <clearcoat_normal_fragment_maps>
+        float padFlat = smoothstep(0.45, 0.85, dot(nonPerturbedNormal, normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz)));
+        clearcoatNormal = normalize(mix(nonPerturbedNormal, clearcoatNormal, padFlat));`
+      )
+      .replace(
+        "#include <lights_physical_fragment>",
+        "#include <lights_physical_fragment>\nmaterial.clearcoatRoughness = mix(max(clearcoatRoughness * 0.75, 0.0525) + geometryRoughness, material.clearcoatRoughness, padFlat);"
+      )
+      .replace(
+        "#include <opaque_fragment>",
+        "float seamW = fwidth(vSeam);\noutgoingLight *= 1.0 - 0.7 * (1.0 - smoothstep(0.12, 0.12 + seamW + 0.04, abs(vSeam)));\n#include <opaque_fragment>"
+      );
+  });
+  const keyMat = padShader(new THREE.MeshPhysicalMaterial({ color: 0x09090b, roughness: 0.3, specularIntensity: 0.4, clearcoat: 1, clearcoatRoughness: 0.05 }), "keys", 0.65);
+  const { prints, glow, symbols } = padPrintTextures();
+  const capMat = padShader(
+    new THREE.MeshPhysicalMaterial({ map: symbols, emissiveMap: symbols, emissive: 0xffffff, emissiveIntensity: 0.14, roughness: 0.25, specularIntensity: 0.5, clearcoat: 1, clearcoatRoughness: 0.04 }),
+    "caps",
+    0.65
+  );
+  // rubber stick caps: fine ridges round the rim
+  const STICK = [[11.6, -1.5], [11.4, 0.2], [10.4, 1.3], [8.2, 2.2], [5.2, 2.8], [3.6, 3.2], [3.5, 6.4], [5, 6.9], [9, 7.1], [10.1, 7.5], [10.45, 8.4], [10.45, 9.7], [10.2, 10.6], [9.6, 11.15], [8.8, 11.3], [8, 11.1], [6.6, 10.55], [4.4, 10.15], [2, 10], [0, 9.98]];
+  const ridged = (v) => v > 9.5 / (STICK.length - 1) && v < 14.5 / (STICK.length - 1);
+  const knurl = normalTexture(16, 64, (x, y) => (ridged(1 - (y + 0.5) / 64) ? Math.cos((x / 16) * Math.PI * 2) : 0), 0.9);
+  knurl.repeat.set(72, 1);
+  const rubberMat = new THREE.MeshStandardMaterial({ color: 0x0b0b0c, roughness: 0.62, normalMap: knurl });
+  const matteMat = new THREE.MeshStandardMaterial({ color: 0x020202, roughness: 0.9 });
+  const printMat = new THREE.MeshStandardMaterial({
+    map: prints,
+    emissiveMap: glow,
+    emissive: 0xffffff,
+    emissiveIntensity: 3,
+    roughness: 0.45,
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
 
   const files = new THREE.FileLoader(manager);
   files.setResponseType("arraybuffer");
@@ -696,6 +960,19 @@ function ps3Controller() {
     g.scene.traverse((o) => {
       if (o.isMesh) shell = o;
     });
+    const sg = shell.geometry;
+    if (sg.attributes.color) {
+      sg.setAttribute("seam", sg.attributes.color);
+      sg.deleteAttribute("color");
+    }
+    // flat uvs from above for the micro texture, one tile every 4 cm
+    const sp = sg.attributes.position;
+    const suv = new Float32Array(sp.count * 2);
+    for (let i = 0; i < sp.count; i++) {
+      suv[2 * i] = sp.getX(i) / 0.04;
+      suv[2 * i + 1] = sp.getZ(i) / 0.04;
+    }
+    sg.setAttribute("uv", new THREE.BufferAttribute(suv, 2));
     shell.material = shellMat;
     group.add(shell);
 
@@ -711,172 +988,178 @@ function ps3Controller() {
       const h = (a, b) => heights[a * info.nz + b];
       return (h(i, k) * (1 - u) + h(i + 1, k) * u) * (1 - v) + (h(i, k + 1) * (1 - u) + h(i + 1, k + 1) * u) * v;
     };
-    const upY = new THREE.Vector3(0, 1, 0);
     const surface = (x, z) => {
       const e = 0.8;
       const normal = new THREE.Vector3(heightAt(x - e, z) - heightAt(x + e, z), 2 * e, heightAt(x, z - e) - heightAt(x, z + e)).normalize();
       return { point: new THREE.Vector3(mm(x), mm(heightAt(x, z)), mm(z)), normal };
     };
-    // A dark recess that hugs the curved surface.
-    const recess = (cx, cz, r, material, lift = 0.06) => {
-      const geo = new THREE.RingGeometry(mm(0.01), mm(r), 48, 8);
-      geo.rotateX(-Math.PI / 2);
-      const pos = geo.attributes.position;
-      for (let i = 0; i < pos.count; i++) {
-        const x = cx + pos.getX(i) * 1000;
-        const z = cz + pos.getZ(i) * 1000;
-        pos.setXYZ(i, mm(x), mm(heightAt(x, z) + lift), mm(z));
+    // the back face of the shell (mm) at x: where the plan outline is
+    const backZ = (x) => {
+      let z = info.z0;
+      while (heightAt(x, z) < 3 && z < 0) z += 0.5;
+      let lo = z - 0.5;
+      for (let k = 0; k < 10; k++) {
+        const mid = (lo + z) / 2;
+        if (heightAt(x, mid) < 3) lo = mid;
+        else z = mid;
       }
-      geo.computeVertexNormals();
-      const m = new THREE.Mesh(geo, material);
-      group.add(m);
-      return m;
-    };
-    const put = (obj, x, z, lift = 0, spin = 0) => {
-      const { point, normal } = surface(x, z);
-      const holder = new THREE.Group();
-      holder.position.copy(point).addScaledVector(normal, mm(lift));
-      holder.quaternion.setFromUnitVectors(upY, normal);
-      obj.rotation.y = spin;
-      holder.add(obj);
-      group.add(holder);
-      return obj;
-    };
-    const disc = (r, material) => {
-      const m = new THREE.Mesh(new THREE.CircleGeometry(mm(r), 48), material);
-      m.rotation.x = -Math.PI / 2;
-      return m;
+      return z;
     };
 
-    // D-pad: four separate arrow keys pointing at the centre
-    const arrow = new THREE.Shape();
-    arrow.moveTo(mm(-4), mm(3));
-    arrow.lineTo(mm(-4), mm(11));
-    arrow.lineTo(mm(4), mm(11));
-    arrow.lineTo(mm(4), mm(3));
-    arrow.lineTo(0, mm(-0.8));
-    arrow.closePath();
-    const arrowGeo = new THREE.ExtrudeGeometry(arrow, { depth: mm(1.8), bevelEnabled: true, bevelThickness: mm(0.7), bevelSize: mm(0.7), bevelSegments: 3 });
-    arrowGeo.rotateX(-Math.PI / 2);
-    const pad = [-46, -5];
+    // Every part is modelled in mm round its own origin and baked into one of these.
+    const parts = { keys: [], caps: [], rubber: [], matte: [], prints: [] };
+    const upY = new THREE.Vector3(0, 1, 0);
+    const toMM = new THREE.Vector3(0.001, 0.001, 0.001);
+    const euler = new THREE.Euler(0, 0, 0, "YXZ");
+    // rigid: stands on the plastic at (x, z), tilted with it
+    const put = (bucket, geo, x, z, { lift = 0, spin = 0, tilt = 0 } = {}) => {
+      const { point, normal } = surface(x, z);
+      const q = new THREE.Quaternion().setFromUnitVectors(upY, normal).multiply(new THREE.Quaternion().setFromEuler(euler.set(tilt, spin, 0)));
+      parts[bucket].push(mergeable(geo).applyMatrix4(new THREE.Matrix4().compose(point.addScaledVector(normal, mm(lift)), q, toMM)));
+    };
+    // flat, in the xz plane: follows the plastic at (x, z)
+    const conform = (bucket, geo, x, z, { lift = 0.05, spin = 0 } = {}) => {
+      const g = mergeable(geo);
+      const pos = g.attributes.position;
+      const nor = g.attributes.normal;
+      const c = Math.cos(spin);
+      const s = Math.sin(spin);
+      for (let i = 0; i < pos.count; i++) {
+        const lx = pos.getX(i);
+        const lz = pos.getZ(i);
+        const { point, normal } = surface(x + lx * c + lz * s, z - lx * s + lz * c);
+        point.addScaledVector(normal, mm(lift));
+        pos.setXYZ(i, point.x, point.y, point.z);
+        nor.setXYZ(i, normal.x, normal.y, normal.z);
+      }
+      parts[bucket].push(g);
+    };
+    const raw = (bucket, geo, x, y, z) => parts[bucket].push(mergeable(geo).applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(mm(x), mm(y), mm(z)), new THREE.Quaternion(), toMM)));
+    const flat = (geo) => geo.rotateX(-Math.PI / 2);
+    const extrude = (shape, depth, bevel, segments = 3) =>
+      flat(new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel * 0.85, bevelSegments: segments, curveSegments: 4 }));
+    const outline = (points) => {
+      const s = new THREE.Shape();
+      points.forEach(([x, y], i) => (i ? s.lineTo(x, y) : s.moveTo(x, y)));
+      s.closePath();
+      return s;
+    };
+
+    // D-pad: four separate keys in a dish, pointed towards the centre, each with a raised arrow
+    const D = [-46, -5];
+    const keyShape = (g) => {
+      const s = new THREE.Shape();
+      s.moveTo(0, -5.6 - 1.414 * g);
+      s.lineTo(4.1 + g, -1.5 - 0.414 * g);
+      s.lineTo(4.1 + g, 4.6);
+      s.quadraticCurveTo(4.1 + g, 6.0 + g, 2.7, 6.1 + g);
+      s.quadraticCurveTo(0, 6.35 + g, -2.7, 6.1 + g);
+      s.quadraticCurveTo(-4.1 - g, 6.0 + g, -4.1 - g, 4.6);
+      s.lineTo(-4.1 - g, -1.5 - 0.414 * g);
+      s.closePath();
+      return s;
+    };
+    const arrowGeo = extrude(outline([[0, 4.9], [1.9, 2.1], [-1.9, 2.1]]), 0.22, 0.15, 1).translate(0, 2.33, 0);
+    const keyGeo = mergeGeometries([mergeable(extrude(keyShape(0), 1.9, 0.5)), mergeable(arrowGeo)]);
+    const keyGap = flat(new THREE.ShapeGeometry(keyShape(0.85), 4));
     for (let k = 0; k < 4; k++) {
       const a = (k * Math.PI) / 2;
-      const dx = Math.sin(a);
-      const dz = -Math.cos(a);
-      put(new THREE.Mesh(arrowGeo, keyMat), pad[0] + dx * 1.5, pad[1] + dz * 1.5, 0.2, -a);
-    }
-    recess(pad[0], pad[1], 16.5, matte);
-
-    // face buttons: domed caps with their coloured symbols
-    const face = [46, -5];
-    const capGeo = new THREE.LatheGeometry([[0, 0], [5.1, 0], [5.25, 2.1], [4.8, 3.3], [3.1, 3.9], [0, 4.1]].map(([r, y]) => new THREE.Vector2(mm(r), mm(y))), 40);
-    const symbols = [
-      [0, -12, "#3ec9a7", (c) => { c.moveTo(128, 58); c.lineTo(196, 178); c.lineTo(60, 178); c.closePath(); }],
-      [12, 0, "#ff5f57", (c) => c.arc(128, 128, 62, 0, Math.PI * 2)],
-      [0, 12, "#7ba2f0", (c) => { c.moveTo(70, 70); c.lineTo(186, 186); c.moveTo(186, 70); c.lineTo(70, 186); }],
-      [-12, 0, "#f08fd8", (c) => c.rect(70, 70, 116, 116)],
-    ];
-    for (const [dx, dz, color, path] of symbols) {
-      const cap = put(new THREE.Mesh(capGeo, keyMat), face[0] + dx, face[1] + dz, -0.4);
-      const mark = disc(3.4, printMat(symbolDecal(color, path)));
-      mark.position.y = mm(4.15);
-      cap.add(mark);
-      recess(face[0] + dx, face[1] + dz, 6.3, matte);
+      const x = D[0] + Math.sin(a) * 8.2;
+      const z = D[1] - Math.cos(a) * 8.2;
+      put("keys", keyGeo, x, z, { lift: -0.85, spin: -a, tilt: 0.07 });
+      conform("matte", keyGap, x, z, { spin: -a, lift: 0.15 });
     }
 
-    // analog sticks: rubber caps, concave on top with a ridged rim
-    const stickGeo = new THREE.LatheGeometry(
-      [[0, 4.6], [6.4, 4.4], [9.4, 5.4], [10.5, 6.6], [10.7, 7.8], [10.1, 8.8], [8.9, 9.2], [7.3, 9.0], [3.6, 8.0], [0, 7.8]].map(([r, y]) => new THREE.Vector2(mm(r), mm(y))),
-      96
-    );
-    const sp = stickGeo.attributes.position;
-    for (let i = 0; i < sp.count; i++) {
-      const x = sp.getX(i);
-      const z = sp.getZ(i);
-      const r = Math.hypot(x, z);
-      if (r < mm(9.6) || sp.getY(i) < mm(5.8)) continue;
-      const f = 1 + 0.025 * Math.max(0, Math.cos(Math.atan2(z, x) * 40));
-      sp.setX(i, x * f);
-      sp.setZ(i, z * f);
-    }
-    stickGeo.computeVertexNormals();
-    for (const sx of [-1, 1]) {
-      const x = sx * 23;
-      const z = 17;
-      recess(x, z, 12.8, matte);
-      put(new THREE.Mesh(new THREE.CylinderGeometry(mm(4), mm(4.6), mm(6), 24), rubber), x, z, 2.5);
-      put(new THREE.Mesh(stickGeo, rubber), x, z, 0);
-    }
-
-    // PS button with its logo; SELECT and START with their printed labels
-    const psTop = decal(256, (c) => {
-      const grad = c.createRadialGradient(128, 110, 10, 128, 128, 128);
-      grad.addColorStop(0, "#5d5e63");
-      grad.addColorStop(1, "#2a2b2f");
-      c.fillStyle = grad;
-      c.beginPath();
-      c.arc(128, 128, 126, 0, Math.PI * 2);
-      c.fill();
-      c.fillStyle = "#0b0b0c";
-      c.font = "italic 900 118px Arial Black, Arial, sans-serif";
-      c.textAlign = "center";
-      c.textBaseline = "middle";
-      c.fillText("PS", 128, 134);
+    // face buttons: smoky caps with the symbols under the gloss, each in its own hole
+    const F = [46, -5];
+    const capProfile = [[5.25, -1.2], [5.25, 1.9], [5.15, 2.6], [4.8, 3.1], [3.7, 3.45], [1.9, 3.6], [0, 3.62]].map(([r, y]) => new THREE.Vector2(r, y));
+    PAD_SYMBOLS.forEach(([, dx, dz], k) => {
+      const cap = new THREE.LatheGeometry(capProfile, 32);
+      const pos = cap.attributes.position;
+      const uv = cap.attributes.uv;
+      for (let i = 0; i < pos.count; i++) uv.setXY(i, ((k % 2) + 0.5 + pos.getX(i) / 11.2) / 2, (1 - Math.floor(k / 2) + 0.5 - pos.getZ(i) / 11.2) / 2);
+      put("caps", cap, F[0] + dx, F[1] + dz, { lift: -0.3 });
+      conform("matte", flat(new THREE.CircleGeometry(6.05, 32)), F[0] + dx, F[1] + dz, { lift: 0.08 });
     });
-    const ps = new THREE.Mesh(new THREE.CylinderGeometry(mm(5.6), mm(5.8), mm(1.4), 48), [keyMat, new THREE.MeshPhysicalMaterial({ map: psTop, roughness: 0.3, metalness: 0.5, clearcoat: 1 }), keyMat]);
-    ps.position.y = mm(0.5);
-    put(ps, 0, 9, 0);
-    recess(0, 9, 7, matte);
-    const label = (text) =>
-      decal(256, (c) => {
-        c.fillStyle = "rgba(235,235,235,0.92)";
-        c.font = "600 38px Helvetica, Arial, sans-serif";
-        c.textAlign = "center";
-        c.textBaseline = "middle";
-        c.fillText(text, 128, 128);
-      });
-    const select = new THREE.Shape();
-    select.moveTo(mm(-3.6), mm(-1.9));
-    select.lineTo(mm(3.6), mm(-1.9));
-    select.lineTo(mm(3.6), mm(1.9));
-    select.lineTo(mm(-3.6), mm(1.9));
-    select.closePath();
-    const start = new THREE.Shape();
-    start.moveTo(mm(-3.4), mm(-2.6));
-    start.lineTo(mm(3.8), 0);
-    start.lineTo(mm(-3.4), mm(2.6));
-    start.closePath();
-    for (const [x, shape, text] of [[-13, select, "SELECT"], [13, start, "START"]]) {
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: mm(1), bevelEnabled: true, bevelThickness: mm(0.5), bevelSize: mm(0.6), bevelSegments: 2 });
-      geo.rotateX(-Math.PI / 2);
-      put(new THREE.Mesh(geo, keyMat), x, -9, 0.1);
-      const print = new THREE.Mesh(new THREE.PlaneGeometry(mm(14), mm(14)), printMat(label(text)));
-      print.rotation.x = -Math.PI / 2;
-      put(print, x, -14.5, 0.08);
-    }
 
-    // player LEDs on the back edge, the first one lit
-    for (let k = 0; k < 4; k++) {
-      const led = new THREE.Mesh(
-        new THREE.BoxGeometry(mm(2.2), mm(0.4), mm(1.2)),
-        k === 0 ? new THREE.MeshBasicMaterial({ color: 0xff3a2a, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: 0x2a0d0b, roughness: 0.4 })
-      );
-      put(led, -6 + k * 4, -31.5, 0.1);
-    }
-
-    // L1 / R1 on the back corners
-    const bumper = new THREE.Shape();
-    bumper.absarc(mm(-11), 0, mm(5), Math.PI / 2, (Math.PI * 3) / 2, false);
-    bumper.absarc(mm(11), 0, mm(5), -Math.PI / 2, Math.PI / 2, false);
-    const bumperGeo = new THREE.ExtrudeGeometry(bumper, { depth: mm(6), bevelEnabled: true, bevelThickness: mm(2), bevelSize: mm(2), bevelSegments: 4 });
+    // analog sticks: concave rubber tops with a ridged rim, on a dome in a hole of the shell
+    const stickGeo = new THREE.LatheGeometry(STICK.map(([r, y]) => new THREE.Vector2(r, y)), 44);
     for (const sx of [-1, 1]) {
-      const l1 = new THREE.Mesh(bumperGeo, keyMat);
-      l1.rotation.set(-Math.PI / 2, 0, sx * 0.1);
-      l1.position.set(mm(sx * 46), mm(12.5), mm(-30.5));
-      group.add(l1);
+      put("rubber", stickGeo, sx * 23, 17, { spin: sx * 0.4 });
+      conform("matte", flat(new THREE.CircleGeometry(12.4, 40)), sx * 23, 17, { lift: 0.06 });
     }
 
+    // PS button with its logo
+    const psGeo = new THREE.LatheGeometry([[5.6, -1.2], [5.6, 0.75], [5.4, 1.2], [4.4, 1.45], [0, 1.55]].map(([r, y]) => new THREE.Vector2(r, y)), 36);
+    put("keys", psGeo, 0, 9);
+    put("prints", atlasCell(flat(new THREE.CircleGeometry(4.6, 24)), PAD_PRINTS.logo).translate(0, 1.6, 0), 0, 9);
+    conform("matte", flat(new THREE.CircleGeometry(6.5, 32)), 0, 9, { lift: 0.06 });
+
+    // SELECT (a small bar) and START (a triangle), labels printed above them
+    const selectShape = (g) => outline([[-3.6 - g, -1.7 - g], [3.6 + g, -1.7 - g], [3.6 + g, 1.7 + g], [-3.6 - g, 1.7 + g]]);
+    const startShape = (g) => outline([[-3.0 - g, -3.0 - 1.6 * g], [3.7 + 2 * g, 0], [-3.0 - g, 3.0 + 1.6 * g]]);
+    for (const [x, shape, cell] of [[-13, selectShape, PAD_PRINTS.select], [13, startShape, PAD_PRINTS.start]]) {
+      put("keys", extrude(shape(0), 0.6, 0.45, 2), x, -9, { lift: -0.15 });
+      conform("matte", flat(new THREE.ShapeGeometry(shape(0.6))), x, -9, { lift: 0.08 });
+      conform("prints", atlasCell(flat(new THREE.PlaneGeometry(12.8, 3.2, 4, 1)), cell), x, -14.2, { lift: 0.06 });
+    }
+
+    // player LEDs on the back edge with their numbers; the name and USB port on the back face
+    const back = backZ(0);
+    conform("prints", atlasCell(flat(new THREE.PlaneGeometry(24, 6, 12, 8)), PAD_PRINTS.leds), 0, back + 4.4, { lift: 0.06 });
+    const name = atlasCell(new THREE.PlaneGeometry(26, 3.25, 10, 1), PAD_PRINTS.name).rotateY(Math.PI);
+    const np = name.attributes.position;
+    for (let i = 0; i < np.count; i++) np.setZ(i, backZ(np.getX(i)) - 0.06 - back);
+    raw("prints", name, 0, 16, back);
+    raw("matte", new THREE.BoxGeometry(7.4, 3.3, 1.2), 0, 10.6, back + 0.45);
+
+    // L1/R1 and the L2/R2 triggers under them: a rounded section swept along the back edge,
+    // sinking into the shell at both ends
+    const sweep = (x0, x1, section, steps = 14) => {
+      const pos = [];
+      const index = [];
+      const m = section.length;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const x = x0 + (x1 - x0) * t;
+        const z = backZ(x);
+        const slope = (backZ(x + 2) - backZ(x - 2)) / 4;
+        const l = Math.hypot(slope, 1);
+        const end = Math.sqrt(Math.max(0, 1 - Math.pow(2 * t - 1, 6)));
+        const vc = (section[0][1] + section[m - 1][1]) / 2;
+        for (const [u, v] of section) pos.push(mm(x + (slope / l) * u * end), mm(vc + (v - vc) * (0.55 + 0.45 * end)), mm(z - (u * end) / l));
+        if (i) for (let j = 0; j < m - 1; j++) {
+          const p = (i - 1) * m + j;
+          const q = i * m + j;
+          index.push(p, p + 1, q + 1, p, q + 1, q);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      geo.setAttribute("uv", new THREE.Float32BufferAttribute(new Float32Array((pos.length / 3) * 2), 2));
+      geo.setIndex(index);
+      geo.computeVertexNormals();
+      parts.keys.push(mergeable(geo));
+    };
+    const arc = (cu, cv, r, a0, a1, n = 4) => Array.from({ length: n + 1 }, (_, k) => [cu + r * Math.cos(a0 + ((a1 - a0) * k) / n), cv + r * Math.sin(a0 + ((a1 - a0) * k) / n)]);
+    const L1 = [[-4, 13.6], ...arc(1.4, 15.8, 2.2, -Math.PI / 2, 0), ...arc(1.4, 17.4, 2.2, 0, Math.PI / 2), [-4, 19.6]];
+    const L2 = [[-4, 2.8], ...arc(4.2, 6.6, 3.8, -Math.PI / 2, 0), ...arc(4.6, 9.2, 3.4, 0, Math.PI / 2), [-4, 12.6]];
+    for (const s of [-1, 1]) {
+      sweep(Math.min(s * 31, s * 64), Math.max(s * 31, s * 64), L1);
+      sweep(Math.min(s * 34, s * 61), Math.max(s * 34, s * 61), L2);
+    }
+
+    const merged = (bucket, material) => {
+      const mesh = new THREE.Mesh(mergeGeometries(parts[bucket]), material);
+      group.add(mesh);
+      return mesh;
+    };
+    merged("keys", keyMat);
+    merged("caps", capMat);
+    merged("rubber", rubberMat);
+    const decals = [merged("matte", matteMat), merged("prints", printMat)];
     shade(group);
+    for (const m of decals) m.castShadow = false;
     renderer.shadowMap.needsUpdate = true;
   });
   group.scale.setScalar(1.02);
