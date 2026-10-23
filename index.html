@@ -193,7 +193,7 @@
   #cover.loading .wave {
     animation: wave 1.1s linear infinite !important;
   }
-  /* Spotify QR on the cover (slide 0): fades in once the cover has drawn itself */
+  /* Spotify QR on the cover (slide 0), always there */
   .qr {
     position: relative;
     z-index: 2; /* above the film grain */
@@ -203,8 +203,6 @@
     gap: 1vh;
     color: #1b1107;
     text-decoration: none;
-    opacity: 0;
-    animation: qr-in 0.9s ease 3.6s forwards;
   }
   .qr svg {
     display: block;
@@ -214,9 +212,6 @@
   .qr span {
     font: 600 1.7vh/1 -apple-system, "Helvetica Neue", Arial, sans-serif;
     letter-spacing: 0.14em;
-  }
-  @keyframes qr-in {
-    to { opacity: 1; }
   }
   #cover.loading .qr {
     display: none;

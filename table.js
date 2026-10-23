@@ -310,6 +310,43 @@ const sheets = SETLIST.map((name, i) => {
   return { i, w, h, x, z, rot, mesh, u, poster, videoTexture, live: false, fade: 0 };
 });
 
+// The printed cover card carries the same Spotify QR as the animated cover overlay
+// (same SVG, same place), so it is always on the cover, not only once landed.
+(function printQrOnCover() {
+  const card = sheets.find((s) => s.i === 0);
+  const svg = document.querySelector("#cover .qr svg");
+  if (!card || !svg) return;
+  const k = 1.6; // the overlay box is 1000px wide, the cover texture 1600px
+  const copy = svg.cloneNode(true);
+  copy.setAttribute("width", String(185 * k));
+  copy.setAttribute("height", String(185 * k));
+  const base = new Image();
+  base.src = "public/cover.png";
+  const qr = new Image();
+  qr.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(copy));
+  Promise.all([base.decode(), qr.decode()])
+    .then(() => {
+      const c = document.createElement("canvas");
+      c.width = c.height = 1600;
+      const g = c.getContext("2d");
+      g.drawImage(base, 0, 0, 1600, 1600);
+      // as laid out by "body.table #cover .qr": 185px QR, 9px gap, 15px label, 3% from the bottom
+      g.drawImage(qr, (500 - 92.5) * k, 761 * k, 185 * k, 185 * k);
+      g.fillStyle = "#1b1107";
+      g.font = `600 ${15 * k}px -apple-system, "Helvetica Neue", Arial, sans-serif`;
+      g.textAlign = "center";
+      g.textBaseline = "bottom";
+      if ("letterSpacing" in g) g.letterSpacing = `${15 * 0.14 * k}px`;
+      g.fillText("ascolta su spotify", 800, 970 * k);
+      const tex = new THREE.CanvasTexture(c);
+      tex.anisotropy = aniso;
+      card.mesh.material.map = tex;
+      card.u.uVideo.value = tex;
+      card.poster = tex;
+    })
+    .catch(() => {});
+})();
+
 // --- props --------------------------------------------------------------------------
 const gltf = new GLTFLoader(manager);
 function shade(obj) {
