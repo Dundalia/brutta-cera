@@ -20,7 +20,7 @@ import {
   VignetteEffect,
 } from "postprocessing";
 
-const { SETLIST, COVER, slides, setShown, attachTable, loading, finishLoading, getSpeed, POLAROID, polaroidStack } = window.visuals;
+const { SETLIST, COVER, slides, setShown, attachTable, loading, finishLoading, getSpeed, SPREAD, spreadCamera, spreadFrame } = window.visuals;
 
 // Where each sheet lies on the table: x, z in metres, rotation in degrees.
 // About 20 cm apart, so the props in between show up on every move.
@@ -32,7 +32,7 @@ const LAYOUT = [
   [0.56, 0.23, -8],
   [0.04, 0.27, 4],
   [-0.5, 0.24, -12],
-  [-1.02, 0.36, 3], // 7-quebec: the patch where the Polaroids land
+  [-1.12, 0.55, 0], // 7-quebec: the Polaroid spread (its cards are placed by quebec.js)
 ];
 const SHEET_W = 0.3;
 const SHEET_H = 0.225;
@@ -220,103 +220,70 @@ function sheetMaterial(poster, u) {
   return m;
 }
 
-// "7-quebec": a patch of table with a pile of Polaroids that keeps renewing itself
-// (the choreography, POLAROID and polaroidStack, lives in index.html for both players).
-// Picture area of a card texture, in UV: the rest is the white frame.
-const POLAROID_PICTURE = [45 / 880, 1 - 850 / 1070, 835 / 880, 1 - 60 / 1070];
-
-// Like a sheet, plus instant-film development of the picture area (uDevelop 0..1):
-// a grey-green blank, then the image comes up, blues first and reds last.
-function polaroidMaterial(tex, focus, develop) {
-  const m = sheetMaterial(tex, { uVideo: { value: tex }, uVideoMix: { value: 0 }, uFocus: focus });
-  const base = m.onBeforeCompile;
-  m.onBeforeCompile = (shader) => {
-    base(shader);
-    shader.uniforms.uDevelop = develop;
-    shader.fragmentShader = shader.fragmentShader
-      .replace("uniform float uFocus;", "uniform float uFocus;\nuniform float uDevelop;")
-      .replace(
-        "vec3 sheetLinear = sheetToLinear(sheetTexel.rgb);",
-        `vec3 sheetLinear = sheetToLinear(sheetTexel.rgb);
-	vec4 pic = vec4(${POLAROID_PICTURE.map((v) => v.toFixed(4)).join(", ")});
-	if (uDevelop < 1.0 && vMapUv.x > pic.x && vMapUv.x < pic.z && vMapUv.y > pic.y && vMapUv.y < pic.w) {
-		float lum = dot(sheetLinear, vec3(0.2126, 0.7152, 0.0722));
-		vec3 faded = mix(vec3(lum) * 0.8, sheetLinear, uDevelop);
-		vec3 d = clamp((vec3(uDevelop) - vec3(0.25, 0.12, 0.0)) / vec3(0.75, 0.85, 0.85), 0.0, 1.0);
-		sheetLinear = mix(vec3(0.03, 0.045, 0.038), faded, d * d * (3.0 - 2.0 * d));
-	}`
-      );
-  };
-  m.customProgramCacheKey = () => "polaroid";
-  return m;
-}
-
-function polaroidSpot(i) {
-  const [x, z, deg] = LAYOUT[i];
-  const rot = (deg * Math.PI) / 180;
-  const focus = { value: 0 };
+// "7-quebec": a spread of Polaroids in the bottom-left corner of the table, laid out by
+// assets/polaroids/quebec.js. They glow a little (half self-lit) so they read in the
+// lamp's dimmer corner; burst prints flip through their frames like stop-motion.
+const CARD_W = 0.088;
+const CARD_H = 0.107;
+function polaroidSpread(i) {
+  const [x, z] = LAYOUT[i];
   const edge = new THREE.MeshStandardMaterial({ color: 0xf1eee6, roughness: 0.8 });
-  const patch = new THREE.Group();
-  patch.position.set(x, 0, z);
-  patch.rotation.y = rot;
-  scene.add(patch);
-  const cards = slides[i].polaroids.map((url) => {
-    const tex = textures.load(url);
-    tex.anisotropy = aniso;
-    const develop = { value: 1 };
-    const card = new THREE.Mesh(new THREE.BoxGeometry(POLAROID.W, 0.0011, POLAROID.H), [edge, edge, polaroidMaterial(tex, focus, develop), edge, edge, edge]);
-    // its shadow is a soft decal that spreads and fades as the card lifts
-    const shadow = new THREE.Mesh(
-      new THREE.PlaneGeometry(POLAROID.W / 0.7, POLAROID.H / 0.7),
-      new THREE.MeshBasicMaterial({ map: softShadow, transparent: true, depthWrite: false })
-    );
-    patch.add(card, shadow);
-    return { card, shadow, tex, develop };
+  const glow = { value: 0.45 };
+  const cards = window.QUEBEC.cards.map((card) => {
+    const frames = card.frames.map((url) => {
+      const t = textures.load(url);
+      t.anisotropy = aniso;
+      return t;
+    });
+    const top = sheetMaterial(frames[0], { uVideo: { value: frames[0] }, uVideoMix: { value: 0 }, uFocus: glow });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(CARD_W, 0.0011, CARD_H), [edge, edge, top, edge, edge, edge]);
+    const turn = (-card.rot * Math.PI) / 180;
+    mesh.position.set(card.x, 0.0012 + card.layer * 0.00035, card.z);
+    mesh.rotation.y = turn;
+    scene.add(mesh);
+    addShadow(contactShadow, CARD_W, CARD_H, card.x, card.z, turn, 0.5, 0.001, 0.0015);
+    addShadow(softShadow, CARD_W * 1.05, CARD_H * 1.05, card.x, card.z, turn, 0.45, 0.004, 0.006);
+    return { card, frames, top, shown: 0 };
   });
   return {
     i,
-    w: POLAROID.AREA_W,
-    h: POLAROID.AREA_H,
+    spread: cards,
+    w: 0.4,
+    h: 0.3,
     x,
     z,
-    rot,
-    u: { uVideo: { value: null }, uVideoMix: { value: 0 }, uFocus: focus },
+    rot: 0,
+    u: { uVideo: { value: null }, uVideoMix: { value: 0 }, uFocus: { value: 0 } },
     poster: null,
     videoTexture: null,
     live: false,
     fade: 0,
-    polaroids: cards,
-    time: POLAROID.start,
+    time: 0,
   };
 }
 
-// Lay the Polaroids out for the current time; their clock only runs while the
-// camera is on them, so leaving and coming back picks up where it was.
-let polaroidClock = 0;
-function updatePolaroids(now) {
-  const dt = polaroidClock ? Math.min(0.1, (now - polaroidClock) / 1000) : 0;
-  polaroidClock = now;
+// Camera state for the current point of the spread tour.
+function spreadPose(s) {
+  const p = spreadCamera(s.time);
+  return { x: p.x, z: p.z, yaw: p.yaw, d: p.frame / 2 / Math.tan(VFOV / 2), tilt: SPREAD.tilt };
+}
+
+// Stop-motion: show each burst print's frame for the current time.
+function updateSpread(now) {
   for (const s of sheets) {
-    if (!s.polaroids) continue;
-    if (landed === s.i) s.time += dt * getSpeed();
-    polaroidStack(s.polaroids.length, s.time).forEach((pose, k) => {
-      const c = s.polaroids[k];
-      c.card.visible = c.shadow.visible = !!pose;
-      if (!pose) return;
-      const turn = (-pose.rot * Math.PI) / 180;
-      c.card.position.set(pose.x, 0.0014 + pose.rank * 0.0007 + pose.lift, pose.z);
-      c.card.rotation.y = turn;
-      c.develop.value = pose.develop;
-      c.shadow.position.set(pose.x + 0.006 + pose.lift * 0.4, 0.0003, pose.z + 0.01 + pose.lift * 0.5);
-      c.shadow.rotation.set(-Math.PI / 2, 0, turn);
-      c.shadow.scale.setScalar(1 + pose.lift * 4);
-      c.shadow.material.opacity = 0.6 - pose.lift * 10;
+    if (!s.spread) continue;
+    s.spread.forEach((c, k) => {
+      if (c.frames.length < 2) return;
+      const f = spreadFrame(c.card, k, (now / 1000) * getSpeed());
+      if (f === c.shown) return;
+      c.shown = f;
+      c.top.map = c.frames[f];
     });
   }
 }
 
 const sheets = SETLIST.map((name, i) => {
-  if (slides[i].polaroids) return polaroidSpot(i);
+  if (slides[i].spread) return polaroidSpread(i);
   const isCover = name === COVER;
   const w = isCover ? COVER_SIZE : SHEET_W;
   const h = isCover ? COVER_SIZE : SHEET_H;
@@ -1244,7 +1211,7 @@ function tween(obj, key, to, ms, done) {
 function flyTo(i, ms) {
   const s = sheets[i];
   const from = { ...cam };
-  const to = focusState(s);
+  const to = s.spread ? spreadPose(s) : focusState(s);
   const dist = Math.hypot(to.x - from.x, to.z - from.z);
   // a dolly move low over the table rather than a flight: it only rises a little
   const peak = Math.max(from.d, to.d) * 1.15 + dist * 0.35;
@@ -1266,7 +1233,7 @@ function depart() {
   if (landed === -1) return;
   const s = sheets[landed];
   landed = -1;
-  if (!s.videoTexture && !s.polaroids) hideCover();
+  if (!s.videoTexture && !s.spread) hideCover();
 }
 
 function land(i) {
@@ -1286,8 +1253,8 @@ function land(i) {
     } else {
       tween(s.u.uVideoMix, "value", 1, 300);
     }
-  } else if (s.polaroids) {
-    // nothing to start: their clock runs while the camera is here
+  } else if (s.spread) {
+    // nothing to start: the camera tours the spread while it is here
   } else {
     showCover();
     slide.start();
@@ -1366,10 +1333,18 @@ function adaptResolution(now) {
   }
 }
 
+let spreadClock = 0;
 function frame(now) {
   adaptResolution(now);
   flicker(now / 1000);
-  updatePolaroids(now);
+  updateSpread(now);
+  const dt = spreadClock ? Math.min(0.1, (now - spreadClock) / 1000) : 0;
+  spreadClock = now;
+  if (!flight && landed !== -1 && sheets[landed].spread) {
+    const s = sheets[landed];
+    s.time += dt * getSpeed();
+    Object.assign(cam, spreadPose(s));
+  }
   if (flight) {
     const t = Math.min(1, (now - flight.t0) / flight.ms);
     const e = ease(t);
@@ -1380,7 +1355,7 @@ function frame(now) {
     cam.z = lerp(f.z, to.z, e);
     cam.yaw = lerp(f.yaw, to.yaw, e);
     cam.d = lerp(f.d, to.d, e) + (flight.peak - lerp(f.d, to.d, 0.5)) * bump;
-    cam.tilt = lerp(f.tilt, 0, e) + flight.tilt * bump;
+    cam.tilt = lerp(f.tilt, to.tilt, e) + flight.tilt * bump;
     if (t >= 1) {
       const i = flight.i;
       flight = null;
@@ -1421,7 +1396,8 @@ function renderFilm(now) {
   filmClock = now;
   focusPoint.lerp(target, Math.min(1, dt * 3));
   dof.target.copy(focusPoint);
-  dof.cocMaterial.worldFocusRange = 0.03 + 0.09 * cam.d;
+  // looking across the table (the Polaroid tour) the sharp zone is thin, like a macro shot
+  dof.cocMaterial.worldFocusRange = cam.tilt > 0.15 ? 0.02 : 0.03 + 0.09 * cam.d;
   composer.render(dt);
 }
 
@@ -1463,7 +1439,7 @@ manager.onLoad = () => {
   });
   for (const s of sheets) {
     if (s.poster) renderer.initTexture(s.poster);
-    if (s.polaroids) s.polaroids.forEach((c) => renderer.initTexture(c.tex));
+    if (s.spread) s.spread.forEach((c) => c.frames.forEach((t) => renderer.initTexture(t)));
   }
   const go = () => {
     if (ready) return;

@@ -55,51 +55,45 @@
     height: auto;
     overflow: visible;
   }
-  /* "7-quebec" in the plain player: Polaroids dropped on the wooden table */
-  #polaroids {
+  /* "7-quebec" in the plain player: the Polaroid spread, the "camera" moving over it */
+  #spread {
     display: none;
-    background: #2a180d url("assets/table/wood_diff_2k.jpg") center / 60vmax;
+    background: #1d120a;
     overflow: hidden;
   }
-  #polaroids.active, #polaroids.under {
+  #spread.active, #spread.under {
     display: block;
   }
-  #polaroids::after {
+  #spread::after {
     content: "";
     position: absolute;
     inset: 0;
     background: radial-gradient(ellipse 80% 75% at 50% 46%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.55) 100%);
   }
-  .pol-stage {
+  .spread-table {
     position: absolute;
-    left: 50%;
-    top: 50%;
-    width: min(96vw, 128vh);
-    aspect-ratio: 4 / 3;
-    transform: translate(-50%, -50%);
+    left: 0;
+    top: 0;
+    width: 4000px;
+    height: 4000px;
+    margin: -2000px 0 0 -2000px;
+    background: url("assets/table/wood_diff_2k.jpg") 0 0 / 1550px 1550px;
+    transform-origin: 2000px 2000px;
   }
-  .pol {
+  .spread-card {
     position: absolute;
-    width: 22%;
-    aspect-ratio: 88 / 107;
-    visibility: hidden;
-    will-change: transform;
+    width: 88px;
+    height: 107px;
+    box-shadow: 1px 2px 3px rgba(0, 0, 0, 0.45), 4px 7px 9px rgba(0, 0, 0, 0.25);
   }
-  .pol img {
-    display: block;
+  .spread-card img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
+    visibility: hidden;
   }
-  /* the undeveloped emulsion over the picture area, fading as it develops */
-  .pol .dev {
-    position: absolute;
-    left: 5.1%;
-    top: 5.6%;
-    width: 89.8%;
-    height: 73.8%;
-    background: #343c37;
-  }
-  body.table #polaroids {
+  body.table #spread {
     display: none !important;
   }
   /* table mode: the WebGL scene replaces the plain player */
@@ -315,12 +309,13 @@
 </div>
 <!--COVER:SVG:END-->
 <div id="label"></div>
+<script src="assets/polaroids/quebec.js"></script>
 <script type="importmap">
 { "imports": { "three": "./vendor/three/three.module.min.js", "three/addons/": "./vendor/three/addons/", "postprocessing": "./vendor/postprocessing/postprocessing.js" } }
 </script>
 <script>
   // Ordered setlist: index = key to press. "0-copertina" is the animated cover above,
-  // "7-quebec" is a set of Polaroids, the others are files in videos-out/.
+  // "7-quebec" is a spread of Polaroids, the others are files in videos-out/.
   // Shown as "number · title".
   const SETLIST = [
     "0-copertina",
@@ -417,106 +412,64 @@
     return slide;
   }
 
-  // "7-quebec": instead of a video, a pile of Polaroids that keeps renewing itself.
-  // The oldest print is slid out from under the pile, a fresh one is laid down
-  // blank, develops, and is put on top. Shared with table.js.
-  const POLAROID_SONGS = {
-    "7-quebec": [1, 2, 3, 4, 5, 6].map((k) => "assets/polaroids/quebec-" + k + ".jpg"),
+  // "7-quebec": instead of a video, a spread of Polaroids on the table (generated in
+  // assets/polaroids/quebec.js). Nothing moves but the camera: it rests on one print at
+  // a time, like a macro shot, then glides to the next. Prints made from bursts of
+  // shots play as stop-motion. Shared with table.js.
+  const SPREAD_SONG = "7-quebec";
+  const SPREAD = {
+    hold: 5.5, // seconds resting on a print
+    move: 2.4, // seconds gliding to the next one
+    frame: 0.155, // metres of table seen top to bottom while resting
+    push: 0.07, // slow push-in while resting
+    tilt: 0.21, // radians: looking a little across the table
+    fps: 3, // stop-motion speed
   };
-  const POLAROID = {
-    W: 0.088, // card size in metres
-    H: 0.107,
-    AREA_W: 0.4, // the 4:3 patch of table they lie on
-    AREA_H: 0.3,
-    // where each one rests on the pile: x, z from the patch centre (m), turn (deg)
-    spots: [[-0.1, -0.045, -14], [0.085, -0.055, 11], [-0.02, 0.03, -4], [0.11, 0.05, 19], [-0.115, 0.06, 8], [0.02, -0.01, -17]],
-    develop: [0.0, 0.012, -3], // where a fresh print lies while it develops
-    out: [-0.36, 0.3, 30], // old prints leave towards the bottom left
-    in: [0.32, 0.3, 24], // fresh ones come in from the bottom right
-    step: 14, // seconds per print
-    // phases inside a print's step, in seconds
-    outEnd: 1.4,
-    inStart: 1.7,
-    inEnd: 3.2,
-    developEnd: 11.4,
-    placeStart: 11.8,
-    placeEnd: 13.8,
-  };
-  // The pile is complete; the next thing to happen is the oldest print leaving.
-  POLAROID.start = POLAROID.spots.length * POLAROID.step;
+  const smoother = (x) => x * x * x * (x * (x * 6 - 15) + 10);
 
-  const easeInOut = (x) => x * x * (3 - 2 * x);
-  const easeOut = (x) => 1 - Math.pow(1 - x, 3);
-  const mixPose = (a, b, e) => [a[0] + (b[0] - a[0]) * e, a[1] + (b[1] - a[1]) * e, a[2] + (b[2] - a[2]) * e];
-
-  // Pose of print i at time t: position and turn on the patch, a small lift while
-  // it moves over the pile, how far it has developed (0..1), and its stacking order.
-  function polaroidPose(i, t) {
-    const P = POLAROID;
-    const n = P.spots.length;
-    if (t < i * P.step) return null;
-    const g = i + n * Math.floor((t / P.step - i) / n);
-    const tau = t - g * P.step;
-    const spot = P.spots[i];
-    let at;
-    let lift = 0;
-    let develop = 1;
-    let order;
-    if (g >= n && tau < P.outEnd) {
-      at = mixPose(spot, P.out, easeInOut(tau / P.outEnd));
-      order = -1;
-    } else if (tau < P.inStart) {
-      return null;
-    } else if (tau < P.inEnd) {
-      const e = easeOut((tau - P.inStart) / (P.inEnd - P.inStart));
-      at = mixPose(P.in, P.develop, e);
-      lift = 0.006 * (1 - e);
-      develop = 0;
-      order = Infinity;
-    } else if (tau < P.placeStart) {
-      at = P.develop;
-      const x = Math.min(1, (tau - P.inEnd) / (P.developEnd - P.inEnd));
-      develop = 1 - Math.pow(1 - x, 1.8);
-      order = Infinity;
-    } else if (tau < P.placeEnd) {
-      const e = easeInOut((tau - P.placeStart) / (P.placeEnd - P.placeStart));
-      at = mixPose(P.develop, spot, e);
-      lift = 0.008 * Math.sin(Math.PI * e);
-      order = Infinity;
-    } else {
-      at = spot;
-      order = g * P.step + P.placeEnd;
-    }
-    return { x: at[0], z: at[1], rot: at[2], lift, develop, order };
+  // Where the camera looks at time t of the tour: x, z on the table, yaw (so the print
+  // is upright), and how much table it sees top to bottom.
+  function spreadCamera(t) {
+    const { cards, tour } = window.QUEBEC;
+    const step = SPREAD.hold + SPREAD.move;
+    const k = Math.floor(t / step);
+    const tau = t - k * step;
+    const at = (n) => cards[tour[((n % tour.length) + tour.length) % tour.length]];
+    const pose = (c, push) => ({ x: c.x, z: c.z, yaw: (-c.rot * Math.PI) / 180, frame: SPREAD.frame * (1 - SPREAD.push * push) });
+    if (tau < SPREAD.hold) return pose(at(k), tau / SPREAD.hold);
+    const a = pose(at(k), 1);
+    const b = pose(at(k + 1), 0);
+    const e = smoother((tau - SPREAD.hold) / SPREAD.move);
+    return { x: a.x + (b.x - a.x) * e, z: a.z + (b.z - a.z) * e, yaw: a.yaw + (b.yaw - a.yaw) * e, frame: a.frame + (b.frame - a.frame) * e };
   }
 
-  // Stacking rank of every visible print (0 = bottom) at time t.
-  function polaroidStack(count, t) {
-    const poses = Array.from({ length: count }, (_, i) => polaroidPose(i, t));
-    const ranked = poses.map((p, i) => [p ? p.order : 0, i]).sort((a, b) => a[0] - b[0]);
-    const rank = [];
-    ranked.forEach(([, i], r) => (rank[i] = r));
-    return poses.map((p, i) => p && { ...p, rank: rank[i] });
-  }
+  // Which stop-motion frame a card shows at time t.
+  const spreadFrame = (card, index, t) => Math.floor(t * SPREAD.fps + index * 0.37) % card.frames.length;
 
-  // Plain-player version: the same choreography with DOM elements over a wood photo.
-  function polaroidSlide(name) {
+  // Plain-player version: the spread laid out in HTML (1 px = 1 mm) under a moving "camera".
+  function spreadSlide() {
     const el = document.createElement("div");
     el.className = "slide";
-    el.id = "polaroids";
-    const stage = document.createElement("div");
-    stage.className = "pol-stage";
-    el.appendChild(stage);
-    const cards = POLAROID_SONGS[name].map((src) => {
-      const card = document.createElement("div");
-      card.className = "pol";
-      const img = new Image();
-      img.src = src;
-      const dev = document.createElement("div");
-      dev.className = "dev";
-      card.append(img, dev);
-      stage.appendChild(card);
-      return { card, img, dev };
+    el.id = "spread";
+    const tableEl = document.createElement("div");
+    tableEl.className = "spread-table";
+    el.appendChild(tableEl);
+    const cards = window.QUEBEC.cards.map((card) => {
+      const div = document.createElement("div");
+      div.className = "spread-card";
+      div.style.left = 2000 + card.x * 1000 - 44 + "px";
+      div.style.top = 2000 + card.z * 1000 - 53.5 + "px";
+      div.style.transform = `rotate(${card.rot}deg)`;
+      div.style.zIndex = String(card.layer + 1);
+      const imgs = card.frames.map((src) => {
+        const img = new Image();
+        img.src = src;
+        div.appendChild(img);
+        return img;
+      });
+      imgs[0].style.visibility = "visible";
+      tableEl.appendChild(div);
+      return { card, imgs, shown: 0 };
     });
     document.body.appendChild(el);
     let t = 0;
@@ -525,29 +478,27 @@
     function tick(now) {
       t += Math.min(0.1, (now - last) / 1000) * speed;
       last = now;
-      polaroidStack(cards.length, t).forEach((pose, i) => {
-        const { card, img, dev } = cards[i];
-        card.style.visibility = pose ? "visible" : "hidden";
-        if (!pose) return;
-        const s = 1 + pose.lift * 3;
-        card.style.left = 50 + (pose.x / POLAROID.AREA_W) * 100 - 11 + "%";
-        card.style.top = 50 + (pose.z / POLAROID.AREA_H) * 100 - (POLAROID.H / POLAROID.AREA_H) * 50 + "%";
-        card.style.zIndex = String(pose.rank + 1);
-        card.style.transform = `rotate(${pose.rot}deg) scale(${s})`;
-        card.style.boxShadow = `${2 + pose.lift * 300}px ${3 + pose.lift * 400}px ${6 + pose.lift * 500}px rgba(0,0,0,0.5)`;
-        const d = pose.develop;
-        dev.style.opacity = String(Math.max(0, 1 - d * 1.15));
-        img.style.filter = d < 1 ? `saturate(${0.25 + 0.75 * d}) contrast(${0.6 + 0.4 * d}) sepia(${0.25 * (1 - d)})` : "";
+      const cam = spreadCamera(t);
+      const scale = window.innerHeight / (cam.frame * 1000);
+      tableEl.style.transform =
+        `translate(${window.innerWidth / 2 - cam.x * 1000}px, ${window.innerHeight / 2 - cam.z * 1000}px) ` +
+        `rotate(${(cam.yaw * 180) / Math.PI}deg) scale(${scale})`;
+      tableEl.style.transformOrigin = `${2000 + cam.x * 1000}px ${2000 + cam.z * 1000}px`;
+      cards.forEach((c, i) => {
+        const f = spreadFrame(c.card, i, t);
+        if (f === c.shown) return;
+        c.imgs[c.shown].style.visibility = "hidden";
+        c.imgs[f].style.visibility = "visible";
+        c.shown = f;
       });
       loop = requestAnimationFrame(tick);
     }
     return {
       el,
-      polaroids: POLAROID_SONGS[name],
+      spread: true,
       warm() {},
       start() {
         cancelAnimationFrame(loop);
-        t = POLAROID.start;
         last = performance.now();
         loop = requestAnimationFrame(tick);
       },
@@ -562,9 +513,7 @@
     };
   }
 
-  const slides = SETLIST.map((name) =>
-    name === COVER ? coverSlide() : POLAROID_SONGS[name] ? polaroidSlide(name) : videoSlide(name)
-  );
+  const slides = SETLIST.map((name) => (name === COVER ? coverSlide() : name === SPREAD_SONG ? spreadSlide() : videoSlide(name)));
 
   // Flat mode: put `next` on top and start it. The previous slide stays visible
   // underneath until `next` has actually painted a frame, so a cut never flashes black.
@@ -834,8 +783,9 @@
     },
     loading: (p) => loading.progress(p),
     getSpeed: () => speed,
-    POLAROID,
-    polaroidStack,
+    SPREAD,
+    spreadCamera,
+    spreadFrame,
     finishLoading: (fn) => loading.finish(fn),
     attachTable(t) {
       table = t;
