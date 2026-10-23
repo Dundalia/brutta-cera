@@ -546,7 +546,8 @@
     return { x: a.x + (b.x - a.x) * e, z: a.z + (b.z - a.z) * e, yaw: a.yaw + (b.yaw - a.yaw) * e, frame: a.frame + (b.frame - a.frame) * e };
   }
 
-  // Which stop-motion frame a card shows at time t.
+  // Which stop-motion frame a card shows at time t, in real seconds: the stop-motion
+  // keeps its pace whatever the playback speed, which only drives the camera's tour.
   const spreadFrame = (card, index, t) => Math.floor(t * SPREAD.fps + index * 0.37) % card.frames.length;
 
   // Plain-player version: the spread laid out in HTML (1 px = 1 mm) under a moving "camera".
@@ -588,7 +589,7 @@
         `rotate(${(cam.yaw * 180) / Math.PI}deg) scale(${scale})`;
       tableEl.style.transformOrigin = `${2000 + cam.x * 1000}px ${2000 + cam.z * 1000}px`;
       cards.forEach((c, i) => {
-        const f = spreadFrame(c.card, i, t);
+        const f = spreadFrame(c.card, i, now / 1000);
         if (f === c.shown) return;
         c.imgs[c.shown].style.visibility = "hidden";
         c.imgs[f].style.visibility = "visible";

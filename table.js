@@ -309,13 +309,14 @@ function spreadPose(s) {
   return { x: p.x, y: 0, z: p.z, yaw: p.yaw, d: p.frame / 2 / Math.tan(VFOV / 2), tilt: SPREAD.tilt };
 }
 
-// Stop-motion: show each burst print's frame for the current time.
+// Stop-motion: show each burst print's frame for the current time (real time: it
+// keeps its pace whatever the playback speed, which only drives the camera).
 function updateSpread(now) {
   for (const s of sheets) {
     if (!s.spread) continue;
     s.spread.forEach((c, k) => {
       if (c.frames.length < 2) return;
-      const f = spreadFrame(c.card, k, (now / 1000) * getSpeed());
+      const f = spreadFrame(c.card, k, now / 1000);
       if (f === c.shown) return;
       c.shown = f;
       c.top.map = c.frames[f];
