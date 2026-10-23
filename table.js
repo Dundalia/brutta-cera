@@ -34,6 +34,7 @@ const LAYOUT = [
   [0.04, 0.27, 4],
   [-0.5, 0.24, -12],
   [-1.12, 0.55, 0], // 7-quebec: the Polaroid spread (its cards are placed by quebec.js)
+  [0.1, -0.8, -6], // 8-usxnc: the TV at the back of the table, facing the room
 ];
 const SHEET_W = 0.3;
 const SHEET_H = 0.225;
@@ -95,6 +96,7 @@ composer.addPass(
 const manager = new THREE.LoadingManager();
 manager.onProgress = (url, loaded, total) => loading(0.08 + (0.74 * loaded) / total);
 const textures = new THREE.TextureLoader(manager);
+const gltf = new GLTFLoader(manager);
 const aniso = renderer.capabilities.getMaxAnisotropy();
 const small = matchMedia("(pointer: coarse)").matches || renderer.capabilities.maxTextureSize < 4096;
 
@@ -266,7 +268,7 @@ function polaroidSpread(i) {
 // Camera state for the current point of the spread tour.
 function spreadPose(s) {
   const p = spreadCamera(s.time);
-  return { x: p.x, z: p.z, yaw: p.yaw, d: p.frame / 2 / Math.tan(VFOV / 2), tilt: SPREAD.tilt };
+  return { x: p.x, y: 0, z: p.z, yaw: p.yaw, d: p.frame / 2 / Math.tan(VFOV / 2), tilt: SPREAD.tilt };
 }
 
 // Stop-motion: show each burst print's frame for the current time.
@@ -283,8 +285,115 @@ function updateSpread(now) {
   }
 }
 
+// "8-usxnc": an old cathode-ray TV standing at the back of the table (Poly Haven's
+// Television_01, CC0) with the cat video on its glass. The glass is lit from inside by
+// the picture index.html's tvSlide describes: scanlines, darker corners, and the
+// switch-off where it collapses into a bright line, then a dot. A faint cool light
+// from the screen falls on the table in front of it.
+// The glass: where it is in the model's texture (u0, u1, v0, v1) and in the set's own
+// space (x0, x1, y0, y1, then the least z of the front). It is 4:3, like the picture,
+// which is drawn a little larger, overscanned like on a real set.
+const TV_GLASS_UV = [0.03, 0.362, 0.7, 0.96];
+const TV_GLASS = [-0.27, 0.14, 0.1, 0.42, 0.16];
+const TV_PICTURE = { centre: [-0.0654, 0.2592], half: [0.197, 0.149] };
+const TV_AIM = new THREE.Vector3(-0.045, 0.245, 0.2); // what the camera looks at, in the set's own space
+const TV_TILT = (82 * Math.PI) / 180; // looking at it from in front, a touch from above
+const TV_LIGHT = 0.35;
+function television(i) {
+  const [x, z, deg] = LAYOUT[i];
+  const rot = (deg * Math.PI) / 180;
+  const black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  black.needsUpdate = true;
+  const u = {
+    uVideo: { value: black },
+    uVideoMix: { value: 0 },
+    uFocus: { value: 0 },
+    uCrt: { value: new THREE.Vector4(0, 0, 0, 0) },
+  };
+  const videoTexture = new THREE.VideoTexture(slides[i].video);
+  videoTexture.minFilter = THREE.LinearFilter;
+  videoTexture.generateMipmaps = false;
+  const holder = new THREE.Group();
+  holder.position.set(x, 0, z);
+  holder.rotation.y = rot;
+  scene.add(holder);
+  // a spot from the glass out over the table: it lights what is in front of the set but
+  // never the glass itself, so it leaves no highlight there
+  const light = new THREE.SpotLight(0xc4d6ff, 0, 1.8, 1.05, 1, 2);
+  light.position.set(TV_PICTURE.centre[0], TV_PICTURE.centre[1], 0.215);
+  light.target.position.set(TV_PICTURE.centre[0], -0.25, 1.0);
+  holder.add(light, light.target);
+  const [u0, u1, v0, v1] = TV_GLASS_UV;
+  const [x0, x1, y0, y1, zMin] = TV_GLASS;
+  gltf.load("assets/models/tv/Television_01_1k.gltf", (g) => {
+    g.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      o.material.onBeforeCompile = (shader) => {
+        shader.uniforms.uTvVideo = u.uVideo;
+        shader.uniforms.uCrt = u.uCrt;
+        shader.vertexShader = "varying vec3 vTvLocal;\n" + shader.vertexShader.replace("#include <begin_vertex>", "#include <begin_vertex>\n\tvTvLocal = position;");
+        shader.fragmentShader =
+          "uniform sampler2D uTvVideo;\nuniform vec4 uCrt;\nvarying vec3 vTvLocal;\n" +
+          "vec3 tvToLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }\n" +
+          // the picture at a point of the glass (uCrt: sx, sy, glow, dot; see crtShape)
+          "vec3 tvPicture(vec2 local) {\n" +
+          `\tvec2 q = (local - vec2(${TV_PICTURE.centre[0]}, ${TV_PICTURE.centre[1]})) / vec2(${TV_PICTURE.half[0]}, ${TV_PICTURE.half[1]});\n` +
+          "\tq *= 1.0 + 0.03 * dot(q, q);\n" + // a slight bulge, like the tube's
+          "\tvec2 p = q / max(uCrt.xy, vec2(1e-4));\n" +
+          "\tvec2 edge = (1.0 - abs(p)) / max(fwidth(p), vec2(1e-5));\n" +
+          "\tfloat inside = clamp(edge.x, 0.0, 1.0) * clamp(edge.y, 0.0, 1.0) * step(1e-3, uCrt.x);\n" +
+          "\tvec3 c = pow(tvToLinear(texture2D(uTvVideo, clamp(p * 0.5 + 0.5, 0.0, 1.0)).rgb), vec3(1.12));\n" +
+          // 240 scanlines, evened out where they would be too fine to show
+          "\tfloat line = p.y * 120.0;\n" +
+          "\tc *= mix(0.72 + 0.28 * cos(line * 6.2832), 0.86, smoothstep(0.2, 0.45, fwidth(line)));\n" +
+          "\tc *= 1.15 - 0.4 * dot(q * vec2(0.8, 0.95), q * vec2(0.8, 0.95));\n" +
+          // the beam: washed out to white and brighter as the picture collapses
+          "\tc = mix(c, vec3(0.85, 0.92, 1.0), uCrt.z) * (1.0 + 4.0 * uCrt.z);\n" +
+          "\tvec3 col = c * inside;\n" +
+          "\tfloat away = length(max(abs(q) - uCrt.xy, 0.0));\n" +
+          "\tcol += vec3(0.6, 0.75, 1.0) * uCrt.z * 0.9 * exp(-away * 28.0) * step(1e-3, uCrt.x);\n" +
+          // the last spot of light
+          "\tfloat r = length(q * vec2(1.333, 1.0));\n" +
+          "\tcol += vec3(0.85, 0.92, 1.0) * uCrt.w * (7.0 * exp(-r * r / 0.0003) + 0.7 * exp(-r * 16.0));\n" +
+          "\treturn col;\n}\n" +
+          shader.fragmentShader
+            .replace(
+              "#include <map_fragment>",
+              "#include <map_fragment>\n" +
+                `\tfloat tvGlass = step(${u0}, vMapUv.x) * step(vMapUv.x, ${u1}) * step(${v0}, vMapUv.y) * step(vMapUv.y, ${v1})` +
+                ` * step(${x0}, vTvLocal.x) * step(vTvLocal.x, ${x1}) * step(${y0}, vTvLocal.y) * step(vTvLocal.y, ${y1}) * step(${zMin}, vTvLocal.z);\n` +
+                "\tdiffuseColor.rgb *= 1.0 - 0.75 * tvGlass;"
+            )
+            .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n\tif (tvGlass > 0.5) totalEmissiveRadiance += tvPicture(vTvLocal.xy);");
+      };
+    });
+    holder.add(shade(g.scene));
+    renderer.shadowMap.needsUpdate = true;
+  });
+  // framed a little larger than the set itself (0.6 x 0.46 m)
+  return { i, tv: true, w: 0.66, h: 0.5, x, z, rot, u, poster: black, videoTexture, light, live: false, fade: 0 };
+}
+
+// Camera state looking at the TV.
+function tvPose(s) {
+  const p = TV_AIM.clone().applyAxisAngle(THREE.Object3D.DEFAULT_UP, s.rot);
+  return { x: s.x + p.x, y: p.y, z: s.z + p.z, yaw: s.rot, tilt: TV_TILT, d: fitDistance(s.w, s.h) };
+}
+
+// The picture follows the slide's phase; so does the light it throws.
+function updateTv(now) {
+  for (const s of sheets) {
+    if (!s.tv) continue;
+    const c = slides[s.i].crt;
+    s.u.uCrt.value.set(c.sx, c.sy, c.glow, c.dot);
+    const flicker = 1 + 0.04 * Math.sin(now * 0.031) + 0.03 * Math.sin(now * 0.0127);
+    s.light.intensity = TV_LIGHT * flicker * (Math.min(1, c.sx * c.sy) + 0.6 * c.glow + 0.25 * c.dot);
+  }
+}
+
 const sheets = SETLIST.map((name, i) => {
   if (slides[i].spread) return polaroidSpread(i);
+  if (slides[i].tv) return television(i);
   const isCover = name === COVER;
   const w = isCover ? COVER_SIZE : SHEET_W;
   const h = isCover ? COVER_SIZE : SHEET_H;
@@ -357,7 +466,6 @@ const sheets = SETLIST.map((name, i) => {
 })();
 
 // --- props --------------------------------------------------------------------------
-const gltf = new GLTFLoader(manager);
 function shade(obj) {
   obj.traverse((o) => {
     if (!o.isMesh) return;
@@ -1433,14 +1541,17 @@ function flicker(t) {
 }
 
 // --- camera ---------------------------------------------------------------------------
-const cam = { x: 0, z: 0, d: 2, yaw: 0, tilt: 0 };
+// x, z: the point looked at, y: its height (0 = the table top), d: the distance to it,
+// yaw: the turn about the vertical, tilt: from straight down (0) towards level.
+const cam = { x: 0, y: 0, z: 0, d: 2, yaw: 0, tilt: 0 };
 const aspect = () => window.innerWidth / window.innerHeight;
 const tanV = Math.tan(VFOV / 2);
 const fitDistance = (w, h) => Math.max(h / FIT_MARGIN / 2 / tanV, w / FIT_MARGIN / 2 / (tanV * aspect()));
 const spanDistance = (span) => Math.max(span / 2 / (tanV * aspect()), (span * 0.6) / 2 / tanV);
 const OVERVIEW_X = -0.2;
 const overviewDistance = () => Math.min(3.6, spanDistance(2.4));
-const focusState = (s) => ({ x: s.x, z: s.z, d: fitDistance(s.w, s.h), yaw: s.rot, tilt: 0 });
+const focusState = (s) => ({ x: s.x, y: 0, z: s.z, d: fitDistance(s.w, s.h), yaw: s.rot, tilt: 0 });
+const poseFor = (s) => (s.spread ? spreadPose(s) : s.tv ? tvPose(s) : focusState(s));
 
 // The camera is never perfectly still, like someone holding it: a slow drift of a
 // couple of millimetres (more when it is further away), a slight turn and breath.
@@ -1455,9 +1566,11 @@ function applyCamera(now) {
   const d = cam.d * (1 + 0.0025 * Math.sin(t * 0.19 + 0.8));
   up.set(-Math.sin(yaw), 0, -Math.cos(yaw));
   const back = d * Math.sin(cam.tilt);
-  camera.position.set(x - up.x * back, d * Math.cos(cam.tilt), z - up.z * back);
-  camera.up.copy(up);
-  target.set(x, 0, z);
+  camera.position.set(x - up.x * back, cam.y + d * Math.cos(cam.tilt), z - up.z * back);
+  // looking across rather than down, the top of the picture turns from the far side
+  // of the table to the ceiling
+  camera.up.set(up.x * Math.cos(cam.tilt), Math.sin(cam.tilt), up.z * Math.cos(cam.tilt));
+  target.set(x, cam.y, z);
   camera.lookAt(target);
 }
 
@@ -1481,7 +1594,7 @@ function tween(obj, key, to, ms, done) {
 function flyTo(i, ms) {
   const s = sheets[i];
   const from = { ...cam };
-  const to = s.spread ? spreadPose(s) : focusState(s);
+  const to = poseFor(s);
   const dist = Math.hypot(to.x - from.x, to.z - from.z);
   // a dolly move low over the table rather than a flight: it only rises a little
   const peak = Math.max(from.d, to.d) * 1.15 + dist * 0.35;
@@ -1525,6 +1638,12 @@ function land(i) {
     }
   } else if (s.spread) {
     // nothing to start: the camera tours the spread while it is here
+  } else if (s.tv) {
+    if (!s.live) {
+      s.live = true;
+      s.u.uVideo.value = s.videoTexture;
+      slide.start(); // it switches on
+    }
   } else {
     showCover();
     slide.start();
@@ -1532,6 +1651,13 @@ function land(i) {
   // Sheets left behind go back to their finished drawing.
   for (const o of sheets) {
     if (o === s || !o.live) continue;
+    if (o.tv) {
+      // out of sight by now: just switch it off
+      o.live = false;
+      slides[o.i].stop();
+      o.u.uVideo.value = o.poster;
+      continue;
+    }
     const token = ++o.fade;
     tween(o.u.uVideoMix, "value", 0, 900, () => {
       if (o.fade !== token) return;
@@ -1608,6 +1734,7 @@ function frame(now) {
   adaptResolution(now);
   flicker(now / 1000);
   updateSpread(now);
+  updateTv(now);
   const dt = spreadClock ? Math.min(0.1, (now - spreadClock) / 1000) : 0;
   spreadClock = now;
   if (!flight && landed !== -1 && sheets[landed].spread) {
@@ -1623,6 +1750,7 @@ function frame(now) {
     const to = flight.to;
     cam.x = lerp(f.x, to.x, e);
     cam.z = lerp(f.z, to.z, e);
+    cam.y = lerp(f.y, to.y, e);
     cam.yaw = lerp(f.yaw, to.yaw, e);
     cam.d = lerp(f.d, to.d, e) + (flight.peak - lerp(f.d, to.d, 0.5)) * bump;
     cam.tilt = lerp(f.tilt, to.tilt, e) + flight.tilt * bump;
@@ -1647,6 +1775,7 @@ function frame(now) {
   // A sheet shows its exact colours only when the camera sits right on it.
   let focus = 0;
   for (const s of sheets) {
+    if (s.tv) continue;
     const fit = fitDistance(s.w, s.h);
     const near = 1 - smooth(fit * 1.01, fit * 1.35, cam.d);
     const centred = 1 - smooth(0.004, 0.05, Math.hypot(cam.x - s.x, cam.z - s.z));
@@ -1666,8 +1795,9 @@ function renderFilm(now) {
   filmClock = now;
   focusPoint.lerp(target, Math.min(1, dt * 3));
   dof.target.copy(focusPoint);
-  // looking across the table (the Polaroid tour) the sharp zone is thin, like a macro shot
-  dof.cocMaterial.worldFocusRange = cam.tilt > 0.15 ? 0.02 : 0.03 + 0.09 * cam.d;
+  // looking across the table (the Polaroid tour) the sharp zone is thin, like a macro shot;
+  // facing the TV it takes in the whole set
+  dof.cocMaterial.worldFocusRange = cam.tilt > 0.15 ? lerp(0.02, 0.3, smooth(0.5, 1.3, cam.tilt)) : 0.03 + 0.09 * cam.d;
   composer.render(dt);
 }
 
@@ -1690,7 +1820,7 @@ function resize() {
   composer.setSize(window.innerWidth, window.innerHeight);
   camera.aspect = aspect();
   camera.updateProjectionMatrix();
-  if (!flight && landed !== -1) cam.d = fitDistance(sheets[landed].w, sheets[landed].h);
+  if (!flight && landed !== -1 && !sheets[landed].spread) Object.assign(cam, poseFor(sheets[landed]));
 }
 window.addEventListener("resize", resize);
 resize();
@@ -1750,7 +1880,7 @@ attachTable({
       finishLoading(() => {
         startLoop();
         if (landed === -1 && !flight) {
-          Object.assign(cam, { x: OVERVIEW_X, z: 0.01, d: overviewDistance(), yaw: 0, tilt: 0 });
+          Object.assign(cam, { x: OVERVIEW_X, y: 0, z: 0.01, d: overviewDistance(), yaw: 0, tilt: 0 });
           flyTo(i, 5200);
         }
       });
@@ -1760,7 +1890,7 @@ attachTable({
   jumpTo(i) {
     startLoop();
     flight = null;
-    Object.assign(cam, focusState(sheets[i]));
+    Object.assign(cam, poseFor(sheets[i]));
     land(i);
   },
   flyTo,
